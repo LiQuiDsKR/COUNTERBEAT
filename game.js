@@ -32,6 +32,13 @@ const PAL = {
   dodge:  { bg: '#07070c', fg: '#ffffff', acc: '#00e5ff', warn: '0,229,255', grid: '255,255,255', shade: 'rgba(7,7,12,0.72)' },
   strike: { bg: '#f1efe9', fg: '#0c0c12', acc: '#ff1e56', warn: '255,30,86', grid: '0,0,0',       shade: 'rgba(241,239,233,0.78)' },
 };
+// 게임 중 팔레트: 스테이지 테마색으로 강조색을 바꿈 (메뉴는 PAL 그대로). STAGES 의 color = 회피, strikeColor = 반격
+let RUN_PAL = PAL;
+const hexRGB = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16)).join(',');
+function applyTheme(stage) {
+  const d = stage.color || PAL.dodge.acc, s = stage.strikeColor || PAL.strike.acc;
+  RUN_PAL = { dodge: { ...PAL.dodge, acc: d, warn: hexRGB(d) }, strike: { ...PAL.strike, acc: s, warn: hexRGB(s) } };
+}
 
 const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
 function segDist(px, py, ax, ay, bx, by) {
@@ -74,6 +81,7 @@ function loadSens() {
 const opts = { god: false, hitbox: false,
   offset: ls('offset', 0),
   filter: localStorage.getItem('cb_filter') !== '0',
+  mtrack: localStorage.getItem('cb_mtrack') === '1',   // 마우스 트래킹 (PC): 드래그 없이 플레이어가 커서에 딱 붙어 따라감
   lang: localStorage.getItem('cb_lang') || defaultLang(),   // 설정 화면 언어: ko / en / ja / zh
   sens: loadSens(), accel: ls('accel', 2), laser: ls('laser', 1), slam: ls('slam', 4),
   vol: ls('vol', 7), mvol: ls('mvol', 10) };   // 볼륨 0~10
@@ -83,14 +91,17 @@ function saveOpts() {
   for (const k of ['offset', 'accel', 'laser', 'slam', 'vol', 'mvol']) localStorage.setItem('cb_' + k, opts[k]);
   localStorage.setItem('cb_sensx', SENS_LEVELS[opts.sens]);
   localStorage.setItem('cb_filter', opts.filter ? '1' : '0');
+  localStorage.setItem('cb_mtrack', opts.mtrack ? '1' : '0');
   localStorage.setItem('cb_lang', opts.lang);
 }
 // ===== 스테이지 =====
 // setStage: 곡·보스 HP·구간 테이블을 그 스테이지 것으로 바꿈 (곡이 없으면 내장 합성 비트)
-let STAGE = null, SONG = null, SONG_BARS = null;
+let STAGE = null, SONG = null, SONG_BARS = null, POWER = 1;   // POWER: 회피 탄막 세기 (1스테이지 = 1)
 function setStage(stage) {
   STAGE = stage;
   SONG = SONGS[stage.song] || null;
+  applyTheme(stage);
+  POWER = SONG?.power ?? 1;
   SONG_BARS = null; BOSS_HP = 1000;
   Sound.preloadSong(SONG ? SONG.file : null);
   if (!SONG) return;
@@ -118,14 +129,18 @@ function setStage(stage) {
 }
 // 차트 박 → 노드 종류. 마지막 = FINISH, 앞 노드와 8분 이하 간격 = 이어지는 연타(chain), 나머지 = 정박(beat)
 // 연타는 4개 단위로 끊음 (계속 같은 쪽으로 휘면 화면 밖으로 말려 나가니까, 4연타처럼 새 곡선으로 다시 시작)
+// 셋잇단: 16분 칸 사이 값(1.33, 2.67 …)은 3분의 1 단위로 맞춤. 결과 = { 16분 칸: [{ kind, frac }] }
 let CHART = {};
 function chartKinds(steps) {
   const m = {};
   let run = 0;
   steps.forEach((st, i) => {
-    if (i === steps.length - 1) m[st] = 'fin';
-    else if (i > 0 && st - steps[i - 1] <= 2 && run < 4) { m[st] = 'chain'; run++; }
-    else { m[st] = 'beat'; run = 1; }
+    let kind;
+    if (i === steps.length - 1) kind = 'fin';
+    else if (i > 0 && st - steps[i - 1] <= 2 && run < 4) { kind = 'chain'; run++; }
+    else { kind = 'beat'; run = 1; }
+    const cell = Math.floor(st + 1e-6), frac = Math.round((st - cell) * 3) / 3;
+    (m[cell] = m[cell] || []).push({ kind, frac });
   });
   return m;
 }
@@ -170,10 +185,11 @@ function barInfo(bar) {
 
 // 회피 마디 패턴: 악기 = 탄막. kick→링, bell→레이저, slam(808)→반화면 블라스트, spray(하이햇)→조준탄
 const dodgeCache = {};
-function dodgeBar(d, tier) {
-  const key = d + '_' + tier;
+// POWER(스테이지 난이도)가 높을수록 레이저·블라스트·조준탄 추가 (1 = 1스테이지 그대로, 2 = 2스테이지, 2.5 = 3스테이지)
+function dodgeBar(d, tier, pw = POWER) {
+  const key = d + '_' + tier + '_' + pw;
   if (dodgeCache[key]) return dodgeCache[key];
-  const p = { kick: [], bell: [], slam: -1, spray: [], clap: [12], riser: false };
+  const p = { kick: [], bell: [], slam: [], spray: [], clap: [12], riser: false };
   if (d === 0) {
     p.kick = [0, 8];
     if (tier >= 1) p.bell = [[4, 7], [12, 3]];
@@ -185,7 +201,7 @@ function dodgeBar(d, tier) {
     if (tier >= 3) p.kick = [0, 8, 10];
   } else if (d === 2) {
     p.kick = tier >= 2 ? [0, 4] : [0];
-    p.slam = 8;
+    p.slam = [8];
     p.bell = tier >= 1 ? [[2, -7], [12, 3]] : [[12, 3]];
   } else {
     p.kick = [0, 4, 8];
@@ -193,6 +209,20 @@ function dodgeBar(d, tier) {
     p.riser = true; p.clap = [];
     if (tier >= 1) p.bell = [[2, 0], [10, 5]];
   }
+  // 스테이지 난이도 추가분
+  // 블라스트 수 (회피 4마디당): 1스테이지 1번 → POWER 2: 2번 → 2.5: 3번
+  if (pw >= 2) {
+    if (d === 0 && tier === 0) p.bell = [[4, 7], [12, 3]];       // 첫 회피부터 레이저
+    if (d === 1) p.slam.push(8);
+    if (d === 2 && tier === 0) p.bell = [[2, -7], [12, 3]];
+    if (d === 3) p.spray.push(9);
+  }
+  if (pw >= 2.5) {
+    if (d === 0) p.bell.push([8, -4]);                            // 레이저 하나 더
+    if (d === 3) p.slam.push(8);                                  // 블라스트 3마디 연속 (좌우 번갈아)
+    if (d === 3) p.spray.push(5, 11);
+  }
+  p.spray.sort((a, b) => a - b);
   return (dodgeCache[key] = p);
 }
 function kicksOf(info) {
@@ -261,13 +291,13 @@ function spawnStep(g) {
     const p = dodgeBar(info.d, info.tier);
     if (p.kick.includes(s)) spawnRing(t, info.tier, bar * 0.37 + s * 0.19);
     p.bell.forEach(([st, pi], i) => { if (st === s) spawnLaser(t, pi, (i + bar) % 2 ? 'v' : 'h'); });
-    if (p.slam === s) spawnSlam(t);
+    if (p.slam.includes(s)) spawnSlam(t);
     if (p.spray.includes(s)) spawnAimed(t, info.tier);
   } else if (info.type === 'strike') {
     if (info.k === 0 && s === 0) S.lastNode = { x: W / 2, y: 640 };
     // 녹음 차트가 있으면 패턴 대신 차트 박자대로 (라벨은 회복 규칙·WARNING 연출에만 쓰임)
     const chart = CHART[bar - info.k];
-    if (chart) { const kind = chart[info.k * 16 + s]; if (kind) spawnNode(t, kind); return; }
+    if (chart) { for (const n of chart[info.k * 16 + s] || []) spawnNode(t + n.frac * STEP, n.kind); return; }
     if (info.pattern === 'split') {
       // SPLIT (곡이 4마디 단위와 어긋나는 구간): WARNING 후 박을 점점 잘게 쪼갬. 전부 4박 기준.
       //   1마디: 2분음표(1·3박) → 2마디: 4분음표 → 3마디: 8분 4연타 ×2 → 4마디: 8분 4연타 + FINISH
@@ -303,7 +333,8 @@ function spawnStep(g) {
   }
 }
 function spawnRing(t, tier, off) {
-  const n = 10 + tier * 2, sp = 140 + tier * 18;
+  const ex = POWER - 1;   // 스테이지 난이도: 링 탄 개수·속도 추가
+  const n = 10 + tier * 2 + Math.round(ex * 2), sp = 140 + tier * 18 + ex * 10;
   for (let i = 0; i < n; i++) {
     const a = off + i / n * Math.PI * 2;
     S.hazards.push({ k: 'b', t0: t, x0: BOSS_X, y0: BOSS_Y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, r: 8 });
@@ -1234,7 +1265,7 @@ function drawWinScreen(pal, e) {
 }
 
 function draw(T, now) {
-  const pal = PAL[S.vphase];
+  const pal = (S.mode === 'title' ? PAL : RUN_PAL)[S.vphase];
   ctx.setTransform(dpr * scale, 0, 0, dpr * scale, 0, 0);
   ctx.fillStyle = pal.bg; ctx.fillRect(0, 0, W, H);
   ui.hits = [];   // 버튼 터치 영역은 매 프레임 그리면서 다시 등록
@@ -1270,10 +1301,10 @@ function draw(T, now) {
   }
   if (S.paused) {
     ctx.fillStyle = '#000000'; ctx.fillRect(0, 0, W, H);   // 완전히 가림: 멈춰놓고 패턴 보며 예측하는 꼼수 방지
-    chromaText('PAUSED', W / 2, H * 0.32, 60, PAL.dodge);
-    button(W / 2, H * 0.46, 280, 64, 'RESUME', PAL.dodge, { primary: true }, () => setPaused(false));
-    button(W / 2, H * 0.46 + 84, 280, 64, 'RETRY', PAL.dodge, {}, () => { setPaused(false); restartRun(); });
-    button(W / 2, H * 0.46 + 168, 280, 64, 'STAGES', PAL.dodge, {}, () => { setPaused(false); goToSelect(); });
+    chromaText('PAUSED', W / 2, H * 0.32, 60, RUN_PAL.dodge);
+    button(W / 2, H * 0.46, 280, 64, 'RESUME', RUN_PAL.dodge, { primary: true }, () => setPaused(false));
+    button(W / 2, H * 0.46 + 84, 280, 64, 'RETRY', RUN_PAL.dodge, {}, () => { setPaused(false); restartRun(); });
+    button(W / 2, H * 0.46 + 168, 280, 64, 'STAGES', RUN_PAL.dodge, {}, () => { setPaused(false); goToSelect(); });
   } else if (S.mode === 'play') drawPauseButton(pal);
 }
 
@@ -1281,6 +1312,8 @@ function draw(T, now) {
 let lastNow = performance.now();
 function frame(now) {
   const dt = Math.min(0.05, (now - lastNow) / 1000); lastNow = now;
+  const cur = tracking() ? 'none' : '';   // 트래킹 중엔 커서 숨김 (플레이어가 곧 커서)
+  if (canvas.style.cursor !== cur) canvas.style.cursor = cur;
   let T = S.endT;
   if (S.mode === 'play' && !S.paused) {
     const run = S;
@@ -1302,7 +1335,8 @@ function frame(now) {
   S.prevX = S.player.x; S.prevY = S.player.y;
   requestAnimationFrame(frame);
 }
-requestAnimationFrame(frame);
+// 루프는 모든 스크립트(ui.js 포함) 실행 뒤에 시작. 바로 시작하면 ui.js 받기 전에 첫 프레임이 돌아 루프가 죽을 수 있음
+document.addEventListener('DOMContentLoaded', () => requestAnimationFrame(frame));
 
 // ================= 입력: 상대 드래그 =================
 let dragging = false, lx = 0, ly = 0, lt = 0;
@@ -1341,7 +1375,15 @@ canvas.addEventListener('pointerup', e => {
   if (S.mode === 'title') uiUp(tx, ty, tap);
   else if (tap && (S.paused || S.mode === 'dead' || S.mode === 'win')) tapAt(tx, ty);
 });
+// 마우스 트래킹: 게임 중엔 버튼을 안 눌러도 플레이어 = 커서 위치 (감도·가속 무시). 마우스 입력에만 적용
+const tracking = () => opts.mtrack && S.mode === 'play' && !S.paused;
 canvas.addEventListener('pointermove', e => {
+  if (e.pointerType === 'mouse' && tracking()) {
+    const [mx, my] = toLogical(e);
+    S.player.x = clamp(mx, 12, W - 12); S.player.y = clamp(my, 12, H - 12);
+    lx = e.clientX; ly = e.clientY; lt = e.timeStamp;
+    return;
+  }
   if (!dragging) return;
   const dx = e.clientX - lx, dy = e.clientY - ly, dt = Math.max(1, e.timeStamp - lt);
   const base = SENS_LEVELS[opts.sens], acc = ACCEL_LEVELS[opts.accel];
