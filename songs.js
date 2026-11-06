@@ -4,8 +4,8 @@
 // dodge 구간의 마지막 마디 4박째 = 캐치 포인트 (곡에 필터를 닫아 빨아들였다가 드롭에 확 열기)
 const SONGS = {
   cb1: {
-    title: 'COUNTERBEAT #1',
-    file: 'music/COUNTERBEAT%20%231.mp3',
+    title: 'CATCH POINT',
+    file: 'music/1.%20CATCH%20POINT.mp3',
     bpm: 150,
     offset: 0.022,      // 파일 시작 → 첫 박(초). 브라우저 분석값
     bossHp: 3000,       // 전부 PERFECT 기준: 그레이즈 x1.5면 SPLIT(56)쯤, 그레이즈 없이도 72마디 2배 비트 반격쯤 처치
@@ -62,7 +62,7 @@ const SONGS = {
 // 스테이지 목록 (스테이지 선택 화면 카드 순서). song: SONGS 키, locked: 아직 없음
 // diff: 난이도 별 (1~5), color: 카드 강조색
 const STAGES = [
-  { id: 1, song: 'cb1', name: 'COUNTERBEAT', diff: 1, color: '#00e5ff' },
+  { id: 1, song: 'cb1', name: 'CATCH POINT', diff: 1, color: '#00e5ff' },
   { id: 2, locked: true, color: '#ff1e56' },
   { id: 3, locked: true, color: '#b06bff' },
   { id: 4, locked: true, color: '#ffd23f' },

@@ -177,35 +177,55 @@ function drawStageCard(st, cx, cy, sc, alpha, pal, now) {
 }
 
 // ---------- 설정 오버레이 ----------
-const SET_Y0 = 210, SET_DY = 80;
+// 언어: 현재는 설정 화면 문구에만 적용 (한·영·일·중)
+const LANGS = ['ko', 'en', 'ja', 'zh'];
+const LANG_NAME = { ko: '한국어', en: 'English', ja: '日本語', zh: '中文' };
+const I18N = {
+  lang:   { ko: '언어', en: 'Language', ja: '言語', zh: '语言' },
+  vol:    { ko: '전체 볼륨', en: 'Master Volume', ja: '全体音量', zh: '总音量' },
+  mvol:   { ko: '음악 볼륨', en: 'Music Volume', ja: '音楽音量', zh: '音乐音量' },
+  sens:   { ko: '이동 감도', en: 'Sensitivity', ja: '移動感度', zh: '移动灵敏度' },
+  accel:  { ko: '가속', en: 'Acceleration', ja: '加速', zh: '加速' },
+  laser:  { ko: '레이저 소리', en: 'Laser Sound', ja: 'レーザー音', zh: '激光音效' },
+  slam:   { ko: '블라스트 소리', en: 'Blast Sound', ja: 'ブラスト音', zh: '爆破音效' },
+  filter: { ko: 'DJ 필터', en: 'DJ Filter', ja: 'DJフィルター', zh: 'DJ滤波' },
+  sync:   { ko: '싱크 보정', en: 'Sync Offset', ja: '同期補正', zh: '同步校准' },
+};
+const ACCEL_NAME = { ko: ['OFF', '약', '중', '강'], en: ['OFF', 'Low', 'Mid', 'High'], ja: ['OFF', '弱', '中', '強'], zh: ['OFF', '弱', '中', '强'] };
+const tr = key => I18N[key][opts.lang] || I18N[key].en;
+
+const SET_Y0 = 196, SET_DY = 72;
 const SETTINGS = [
-  { label: '전체 볼륨', get: () => `${opts.vol * 10}%`,
+  { key: 'lang', get: () => LANG_NAME[opts.lang],
+    step: d => { opts.lang = LANGS[(LANGS.indexOf(opts.lang) + d + LANGS.length) % LANGS.length]; } },
+  { key: 'vol', get: () => `${opts.vol * 10}%`,
     step: d => { opts.vol = clamp(opts.vol + d, 0, 10); applyVolume(); preview(Sound.SLAMS[opts.slam]); } },
-  { label: '음악 볼륨', get: () => `${opts.mvol * 10}%`, step: d => { opts.mvol = clamp(opts.mvol + d, 0, 10); applyVolume(); } },
-  { label: '이동 감도', get: () => `${opts.sens + 1}`, step: d => { opts.sens = clamp(opts.sens + d, 0, SENS_LEVELS.length - 1); } },
-  { label: '가속', get: () => ACCEL_LEVELS[opts.accel][1], step: d => { opts.accel = clamp(opts.accel + d, 0, ACCEL_LEVELS.length - 1); } },
-  { label: '레이저 소리', get: () => Sound.LASERS[opts.laser].name,
+  { key: 'mvol', get: () => `${opts.mvol * 10}%`, step: d => { opts.mvol = clamp(opts.mvol + d, 0, 10); applyVolume(); } },
+  { key: 'sens', get: () => `${opts.sens + 1}`, step: d => { opts.sens = clamp(opts.sens + d, 0, SENS_LEVELS.length - 1); } },
+  { key: 'accel', get: () => (ACCEL_NAME[opts.lang] || ACCEL_NAME.en)[opts.accel],
+    step: d => { opts.accel = clamp(opts.accel + d, 0, ACCEL_LEVELS.length - 1); } },
+  { key: 'laser', get: () => Sound.LASERS[opts.laser].name,
     step: d => { opts.laser = (opts.laser + d + Sound.LASERS.length) % Sound.LASERS.length; preview(Sound.LASERS[opts.laser]); } },
-  { label: '슬램 소리', get: () => Sound.SLAMS[opts.slam].name,
+  { key: 'slam', get: () => Sound.SLAMS[opts.slam].name,
     step: d => { opts.slam = (opts.slam + d + Sound.SLAMS.length) % Sound.SLAMS.length; preview(Sound.SLAMS[opts.slam]); } },
-  { label: 'DJ 필터', get: () => opts.filter ? 'ON' : 'OFF', step: () => { opts.filter = !opts.filter; } },
-  { label: '싱크 보정', get: () => `${Math.round(opts.offset * 1000)}ms`,
+  { key: 'filter', get: () => opts.filter ? 'ON' : 'OFF', step: () => { opts.filter = !opts.filter; } },
+  { key: 'sync', get: () => `${Math.round(opts.offset * 1000)}ms`,
     step: d => { opts.offset = Math.round((opts.offset + d * 0.01) * 100) / 100; } },
 ];
 function preview(snd) { Sound.init(); Sound.ensureBus(); snd.play(Sound.ctx.currentTime + 0.03, 0); }
 function drawSettings(pal) {
   ctx.fillStyle = 'rgba(7,7,12,0.97)'; ctx.fillRect(0, 0, W, H);
-  chromaText('SETTINGS', W / 2, 120, 44, pal);
-  const ko = { font: FONT_KO, weight: 700 };
+  chromaText('SETTINGS', W / 2, 110, 44, pal);
+  const cjk = { font: FONT_KO, weight: 700 };
   SETTINGS.forEach((it, i) => {
     const y = SET_Y0 + i * SET_DY, v = it.get();
-    ctx.fillStyle = 'rgba(255,255,255,0.05)'; ctx.fillRect(30, y - 31, W - 60, 62);
-    text(it.label, 52, y, 20, pal.fg, { ...ko, align: 'left' });
+    ctx.fillStyle = 'rgba(255,255,255,0.05)'; ctx.fillRect(30, y - 28, W - 60, 56);
+    text(tr(it.key), 52, y, 19, pal.fg, { ...cjk, align: 'left' });
     chevron(262, y, -1, pal.acc); chevron(498, y, 1, pal.acc);
-    text(v, 380, y, v.length > 8 ? 17 : 22, pal.fg);
+    text(v, 380, y, v.length > 8 ? 17 : 21, pal.fg, /[^\x00-\x7f]/.test(v) ? cjk : {});
     // 값 영역 왼쪽 절반 = 이전, 오른쪽 절반 = 다음
-    ui.hits.push({ x: 230, y: y - 34, w: 150, h: 68, fn: () => { it.step(-1); saveOpts(); } });
-    ui.hits.push({ x: 380, y: y - 34, w: 150, h: 68, fn: () => { it.step(1); saveOpts(); } });
+    ui.hits.push({ x: 230, y: y - 32, w: 150, h: 64, fn: () => { it.step(-1); saveOpts(); } });
+    ui.hits.push({ x: 380, y: y - 32, w: 150, h: 64, fn: () => { it.step(1); saveOpts(); } });
   });
   button(W / 2, SET_Y0 + SETTINGS.length * SET_DY + 40, 200, 56, 'BACK', pal, { primary: true }, () => { ui.settings = false; saveOpts(); });
 }

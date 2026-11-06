@@ -6,7 +6,7 @@ const INTRO_BARS = 2;
 const BOSS_X = W / 2, BOSS_Y = 230;
 // 드래그 감도 (설정에서 조절): 손가락 이동량 × 배율. 가속을 켜면 빠르게 휘두를수록 배율이 올라감(최대 기본 × 1.75)
 const SENS_LEVELS = [1.2, 1.4, 1.6, 1.9, 2.2];             // 이동 감도 1~5
-const ACCEL_LEVELS = [[0, 'OFF'], [0.5, '약'], [0.9, '중'], [1.4, '강']];   // 손가락 속도(css px/ms)당 추가 배율
+const ACCEL_LEVELS = [0, 0.5, 0.9, 1.4];   // 가속 OFF/약/중/강: 손가락 속도(css px/ms)당 추가 배율
 const HIT_R = 4, PLAYER_R = 10, GRAZE_R = 30;
 const NODE_LEAD = BEAT * 1.5, FIN_LEAD = BEAT * 2.5;   // 공격 노드 예고 (1박/2박 ↔ 2박/3박 중간)
 const NODE_R = 46, FIN_R = 80;
@@ -56,10 +56,16 @@ addEventListener('resize', resize); resize();
 
 // ================= 상태 =================
 // 설정값 (설정 화면 / localStorage). 기본: 감도 3, 가속 중, Railgun, Glitch Crush, DJ 필터 ON
+// 기기 언어로 기본값 (한·영·일·중 외엔 영어)
+function defaultLang() {
+  const l = (navigator.language || 'en').slice(0, 2).toLowerCase();
+  return ['ko', 'en', 'ja', 'zh'].includes(l) ? l : 'en';
+}
 const ls = (k, d) => { const v = localStorage.getItem('cb_' + k); return v === null ? d : +v; };
 const opts = { god: false, hitbox: false,
   offset: ls('offset', 0),
   filter: localStorage.getItem('cb_filter') !== '0',
+  lang: localStorage.getItem('cb_lang') || defaultLang(),   // 설정 화면 언어: ko / en / ja / zh
   sens: ls('sens', 2), accel: ls('accel', 2), laser: ls('laser', 1), slam: ls('slam', 4),
   vol: ls('vol', 7), mvol: ls('mvol', 10) };   // 볼륨 0~10
 const applyVolume = () => Sound.setVolume(opts.vol / 10, opts.mvol / 10);
@@ -67,6 +73,7 @@ applyVolume();
 function saveOpts() {
   for (const k of ['offset', 'sens', 'accel', 'laser', 'slam', 'vol', 'mvol']) localStorage.setItem('cb_' + k, opts[k]);
   localStorage.setItem('cb_filter', opts.filter ? '1' : '0');
+  localStorage.setItem('cb_lang', opts.lang);
 }
 // ===== 스테이지 =====
 // setStage: 곡·보스 HP·구간 테이블을 그 스테이지 것으로 바꿈 (곡이 없으면 내장 합성 비트)
@@ -132,7 +139,7 @@ function barInfo(bar) {
                : { type: 'strike', d: w - 4, k: w - 4, len: 4, last: w === 7, cycle, tier };
 }
 
-// 회피 마디 패턴: 악기 = 탄막. kick→링, bell→레이저, slam(808)→반화면 슬램, spray(하이햇)→조준탄
+// 회피 마디 패턴: 악기 = 탄막. kick→링, bell→레이저, slam(808)→반화면 블라스트, spray(하이햇)→조준탄
 const dodgeCache = {};
 function dodgeBar(d, tier) {
   const key = d + '_' + tier;
@@ -284,7 +291,7 @@ function spawnLaser(t, pi, o) {
 // 곡 시간 → 오디오 컨텍스트 시간
 function ctxAt(songT) { return S.t0 + songT; }
 function spawnSlam(t) {
-  // 슬램마다 좌우 번갈아 (예전엔 cycle 홀짝 기준이라 Suno 비트맵에서 항상 왼쪽만 나왔음)
+  // 블라스트(코드명 slam)마다 좌우 번갈아 (예전엔 cycle 홀짝 기준이라 Suno 비트맵에서 항상 왼쪽만 나왔음)
   const side = (S.slamN = (S.slamN || 0) + 1) % 2 ? 'L' : 'R';
   S.hazards.push({ k: 's', side, tw: t - BEAT * 2, tf: t, te: t + 0.25 });
   const at = ctxAt(t);
@@ -490,7 +497,8 @@ function update(T, dt) {
   if (T < 0) return;
   const px = S.player.x, py = S.player.y;
   const inCatch = S.catchT !== null && T >= S.catchT;
-  const canHit = !opts.god && T >= S.invulnUntil && !inCatch;
+  // 맞을 수 있는지는 매번 다시 확인: 한 프레임에 여러 개가 겹쳐도 첫 피격의 무적이 바로 적용돼 1칸만 깎임
+  const canHit = () => !opts.god && T >= S.invulnUntil && !inCatch;
 
   if (!inCatch) {
     for (const h of S.hazards) {
@@ -504,14 +512,14 @@ function update(T, dt) {
         const x = h.x0 + h.vx * (T - h.t0), y = h.y0 + h.vy * (T - h.t0);
         if (x < -40 || x > W + 40 || y < -40 || y > H + 40) { h.dead = true; continue; }
         const d = Math.hypot(x - px, y - py);
-        if (d < h.r * BULLET_HIT + HIT_R) { if (canHit) { h.dead = true; playerHit(T); } }
+        if (d < h.r * BULLET_HIT + HIT_R) { if (canHit()) { h.dead = true; playerHit(T); } }
         else if (!h.grazed && d < h.r + GRAZE_R && T >= S.invulnUntil) { h.grazed = true; graze(x, y, 3); }
       } else if (h.k === 'l') {
         if (T > h.te + 0.3) { h.dead = true; continue; }
         if (T >= h.tf && !h.fx) { h.fx = true; S.shake = Math.max(S.shake, 0.25); }
         if (T >= h.tf && T <= h.te) {
           const d = h.o === 'h' ? Math.abs(py - h.pos) : Math.abs(px - h.pos);
-          if (d < h.w * 0.4 + HIT_R) { if (canHit) playerHit(T); }
+          if (d < h.w * 0.4 + HIT_R) { if (canHit()) playerHit(T); }
           else if (!h.grazed && d < h.w / 2 + GRAZE_R + 6 && T >= S.invulnUntil) {
             h.grazed = true; graze(h.o === 'h' ? px : h.pos, h.o === 'h' ? h.pos : py, 5);
           }
@@ -523,7 +531,7 @@ function update(T, dt) {
           const x0 = h.side === 'L' ? 0 : W / 2;
           for (let i = 0; i < 24; i++) burst(x0 + Math.random() * W / 2, Math.random() * H, 1, 'fg', 300, 4, 0.5);
         }
-        if (T >= h.tf && T <= h.te && (h.side === 'L' ? px < W / 2 : px >= W / 2) && canHit) playerHit(T);
+        if (T >= h.tf && T <= h.te && (h.side === 'L' ? px < W / 2 : px >= W / 2) && canHit()) playerHit(T);
       }
       if (S.mode !== 'play') return;
     }
@@ -682,7 +690,8 @@ function updateFx(dt) {
 
 // ================= 그리기 =================
 const FONT_EN = '"Arial Black", Impact, "Segoe UI", sans-serif';
-const FONT_KO = '"Pretendard", "Malgun Gothic", "Apple SD Gothic Neo", sans-serif';
+// 한·일·중 글자용 (설정 화면 언어별)
+const FONT_KO = '"Pretendard", "Malgun Gothic", "Apple SD Gothic Neo", "Yu Gothic", "Meiryo", "Hiragino Sans", "Microsoft YaHei", "PingFang SC", sans-serif';
 const colOf = (c, pal) => c === 'fg' ? pal.fg : c === 'acc' ? pal.acc : c;
 
 function text(str, x, y, size, col, o = {}) {
@@ -1107,7 +1116,7 @@ function drawDeadScreen(pal, e) {
 
 function drawWinScreen(pal, e) {
   if (e >= 0.6) once('title', () => Sound.sfxTick(1.0));
-  stamp('BOSS DOWN', W / 2, H * 0.15, 56, pal, (e - 0.6) / 0.2);
+  stamp('STAGE CLEAR', W / 2, H * 0.15, 48, pal, (e - 0.6) / 0.2);
 
   // 결과 카드
   const cx = 40, cw = W - 80, cy = H * 0.22, ch = H * 0.34;
@@ -1270,7 +1279,7 @@ canvas.addEventListener('pointerup', e => {
 canvas.addEventListener('pointermove', e => {
   if (!dragging) return;
   const dx = e.clientX - lx, dy = e.clientY - ly, dt = Math.max(1, e.timeStamp - lt);
-  const base = SENS_LEVELS[opts.sens], acc = ACCEL_LEVELS[opts.accel][0];
+  const base = SENS_LEVELS[opts.sens], acc = ACCEL_LEVELS[opts.accel];
   const gain = clamp(base + Math.hypot(dx, dy) / dt * acc, base, acc ? base * 1.75 : base);
   const k = gain / scale;
   if (S.mode === 'title') { uiMove(...toLogical(e)); lx = e.clientX; ly = e.clientY; lt = e.timeStamp; return; }
