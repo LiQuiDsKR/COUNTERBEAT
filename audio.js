@@ -2,6 +2,58 @@
 // WebAudio 합성 phonk 키트. 음원 파일 없음 → 저작권 걱정 없고 싱크 완벽.
 const Sound = (() => {
   let ac = null, comp, sfxOut, noiseBuf, hard, soft, bus = null, lastGraze = 0;
+  let songBytes = null, songPromise = null, songBuf = null, songSrc = null, songGain = null, songLP = null;
+
+  // ---- 곡(mp3) ----
+  function preloadSong(url) { songBytes = fetch(url).then(r => r.arrayBuffer()); }
+  function loadSong() {
+    if (!songPromise) songPromise = songBytes.then(ab => ac.decodeAudioData(ab)).then(b => (songBuf = b));
+    return songPromise;
+  }
+  function stopSong() { if (songSrc) { try { songSrc.stop(); } catch (_) {} songSrc = null; } }
+  // when: ctx 시간, offset: 파일 내 위치(초)
+  // 곡 → 로우패스(DJ 필터) → 게인 → 버스
+  const DODGE_LP = 1800, DODGE_GAIN = 0.85;
+  function playSong(when, offset, phase) {
+    stopSong();
+    songGain = ac.createGain(); songGain.connect(bus);
+    songLP = ac.createBiquadFilter(); songLP.type = 'lowpass'; songLP.Q.value = 0.9;
+    songLP.connect(songGain);
+    const open = phase === 'strike';
+    songLP.frequency.value = open ? 20000 : DODGE_LP;
+    songGain.gain.value = open ? 1 : DODGE_GAIN;
+    songSrc = ac.createBufferSource(); songSrc.buffer = songBuf;
+    songSrc.connect(songLP); songSrc.start(when, Math.max(0, offset));
+  }
+  // 회피: 먹먹하게 (부드럽게 닫힘)
+  function songDodge(t) {
+    if (!songLP) return;
+    songLP.frequency.cancelScheduledValues(t); songGain.gain.cancelScheduledValues(t);
+    songLP.frequency.setTargetAtTime(DODGE_LP, t, 0.12);
+    songGain.gain.setTargetAtTime(DODGE_GAIN, t, 0.12);
+  }
+  // 캐치: 1박 동안 필터를 확 닫으며 빨아들임
+  function songCatch(t, dur) {
+    if (!songLP) return;
+    const f = songLP.frequency, g = songGain.gain;
+    f.cancelScheduledValues(t); g.cancelScheduledValues(t);
+    f.setValueAtTime(DODGE_LP, t); f.exponentialRampToValueAtTime(140, t + dur * 0.85);
+    g.setValueAtTime(DODGE_GAIN, t); g.linearRampToValueAtTime(0.12, t + dur * 0.85);
+  }
+  // 필터 효과 끄기: 즉시 원음
+  function songOpen(t) {
+    if (!songLP) return;
+    songLP.frequency.cancelScheduledValues(t); songGain.gain.cancelScheduledValues(t);
+    songLP.frequency.setValueAtTime(20000, t); songGain.gain.setValueAtTime(1, t);
+  }
+  // 반격: 드롭 박에 필터 활짝
+  function songStrike(t) {
+    if (!songLP) return;
+    const f = songLP.frequency, g = songGain.gain;
+    f.cancelScheduledValues(t - 0.01); g.cancelScheduledValues(t - 0.01);
+    f.setValueAtTime(140, t - 0.01); f.exponentialRampToValueAtTime(20000, t + 0.015);
+    g.setValueAtTime(0.12, t - 0.01); g.linearRampToValueAtTime(1, t + 0.01);
+  }
 
   const makeCurve = k => {
     const n = 2048, c = new Float32Array(n);
@@ -24,6 +76,7 @@ const Sound = (() => {
     for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
     hard = makeCurve(7); soft = makeCurve(2.2);
     if (ac.state === 'suspended') ac.resume();
+    if (songBytes) loadSong();
   }
 
   // 판마다 새 버스. 재시작 시 이전 판 예약음 즉시 컷.
@@ -126,6 +179,7 @@ const Sound = (() => {
   }
 
   // ---- 즉발 효과음 ----
+  // 베기: 콤보마다 음이 올라가며 멜로디 형성
   function sfxSlash(j, f, fin) {
     const t = ac.currentTime;
     const s = noiseSrc(t, 0.2), hp = ac.createBiquadFilter(), g = ac.createGain();
@@ -138,8 +192,7 @@ const Sound = (() => {
       const o2 = osc('sine', f * 2, t, 0.3), g2 = ac.createGain();
       env(g2, t, 0.002, 0.15, 0.25); o2.connect(g2).connect(sfxOut);
     }
-  }
-  function sfxGraze() {
+  }  function sfxGraze() {
     const t = ac.currentTime; if (t - lastGraze < 0.03) return; lastGraze = t;
     const o = osc('sine', 2600 + Math.random() * 400, t, 0.06), g = ac.createGain();
     env(g, t, 0.001, 0.05, 0.035); o.connect(g).connect(sfxOut);
@@ -171,6 +224,8 @@ const Sound = (() => {
   return {
     init, newBus, fadeOut, kick, bass, clap, hat, bell, crash, riser, roar,
     sfxSlash, sfxGraze, sfxHit, sfxBoom, sfxTick, sfxStamp,
+    preloadSong, loadSong, playSong, stopSong, songDodge, songCatch, songStrike, songOpen,
     get ctx() { return ac; },
+    get songBuf() { return songBuf; },
   };
 })();

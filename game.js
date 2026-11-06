@@ -6,7 +6,7 @@ const INTRO_BARS = 2;
 const BOSS_X = W / 2, BOSS_Y = 230;
 const SENS = 1.3;                       // 드래그 감도
 const HIT_R = 4, PLAYER_R = 10, GRAZE_R = 30;
-const BOSS_HP = 1000;
+let BOSS_HP = 1000;
 const D5 = 587.33, D2 = 73.42;
 const semi = n => Math.pow(2, n / 12);
 // 카우벨 리프 (16분음표 step → 반음)
@@ -43,8 +43,34 @@ function resize() {
 addEventListener('resize', resize); resize();
 
 // ================= 상태 =================
-const opts = { god: false, hitbox: false, offset: +(localStorage.getItem('cb_offset') || 0) };
-const startBar = Math.max(0, parseInt(new URLSearchParams(location.search).get('bar') || '0', 10) || 0);
+const opts = { god: false, hitbox: false, offset: +(localStorage.getItem('cb_offset') || 0),
+  filter: localStorage.getItem('cb_filter') !== '0' };   // 공수 교대 DJ 필터 (F 키)
+const params = new URLSearchParams(location.search);
+const startBar = Math.max(0, parseInt(params.get('bar') || '0', 10) || 0);
+// 음악 모드: 기본 Suno 곡, ?music=synth 면 내장 합성 비트
+const SONG = params.get('music') === 'synth' ? null : SONGS[params.get('music') || 'cb1'] || SONGS.cb1;
+let SONG_BARS = null;   // 마디 → 구간 정보 테이블
+if (SONG) {
+  if (SONG.bpm !== BPM) console.warn('곡 BPM이 게임 BPM과 다름', SONG.bpm, BPM);
+  BOSS_HP = SONG.bossHp;
+  Sound.preloadSong(SONG.file);
+  SONG_BARS = [];
+  const secs = SONG.sections;
+  let strikeN = 0, secN = 0;
+  for (let i = 0; i < secs.length - 1; i++) {
+    const [st, type] = secs[i], en = secs[i + 1][0], len = en - st;
+    if (type === 'strike') strikeN++;
+    secN++;
+    for (let b = st; b < en; b++) {
+      const k = b - st, last = k === len - 1;
+      const tier = Math.min(3, Math.floor(b / 28));
+      let d = k;
+      if (type === 'dodge') d = last ? 3 : k % 3;          // 마지막 마디 = 빌드업+캐치
+      SONG_BARS[b] = { type, d, k, len, last, cycle: type === 'strike' ? strikeN - 1 : secN, tier };
+    }
+  }
+  SONG_BARS.endBar = secs[secs.length - 1][0];
+}
 
 function freshState() {
   return {
@@ -63,10 +89,13 @@ let S = freshState();
 window.__cb = () => S; // 디버그용
 
 // ================= 곡 구조 =================
+const END_INFO = { type: 'end', d: 0, k: 0, len: 1, last: true, cycle: 0, tier: 0 };
 function barInfo(bar) {
-  if (bar < INTRO_BARS) return { type: 'intro', d: bar, cycle: -1, tier: 0 };
+  if (SONG_BARS) return SONG_BARS[bar] || END_INFO;
+  if (bar < INTRO_BARS) return { type: 'intro', d: bar, k: bar, len: INTRO_BARS, last: bar === INTRO_BARS - 1, cycle: -1, tier: 0 };
   const b = bar - INTRO_BARS, cycle = Math.floor(b / 8), w = b % 8, tier = Math.min(cycle, 3);
-  return w < 4 ? { type: 'dodge', d: w, cycle, tier } : { type: 'strike', d: w - 4, cycle, tier };
+  return w < 4 ? { type: 'dodge', d: w, k: w, len: 4, last: w === 3, cycle, tier }
+               : { type: 'strike', d: w - 4, k: w - 4, len: 4, last: w === 7, cycle, tier };
 }
 
 // 회피 마디 패턴: 악기 = 탄막. kick→링, bell→레이저, slam(808)→반화면 슬램, spray(하이햇)→조준탄
@@ -99,12 +128,23 @@ function dodgeBar(d, tier) {
 function kicksOf(info) {
   if (info.type === 'intro') return [0, 8];
   if (info.type === 'dodge') return dodgeBar(info.d, info.tier).kick;
-  return info.d < 3 ? [0, 7, 10] : [0, 8];
+  if (info.type === 'strike') return info.last ? [0, 8] : [0, 7, 10];
+  return [];
 }
 
 // ================= 오디오 스케줄 =================
 function scheduleAudio(g, t) {
   const bar = g >> 4, s = g & 15, info = barInfo(bar), kicks = kicksOf(info);
+  if (SONG) {
+    // 곡이 음악 담당. 게임은 캐치 무음 + 드롭 펀치만 얹음
+    if (opts.filter) {
+      if (info.type === 'dodge' && info.k === 0 && s === 0) Sound.songDodge(t);
+      if (info.type === 'dodge' && info.last && s === 12) Sound.songCatch(t, BEAT);
+      if (info.type === 'strike' && info.k === 0 && s === 0) Sound.songStrike(t);
+    }
+    if (info.type === 'strike' && info.k === 0 && s === 0) Sound.kick(t, true);
+    return;
+  }
   if (info.type === 'intro') {
     if (kicks.includes(s)) Sound.kick(t);
     if (s % 2 === 0) Sound.hat(t, s % 4 === 2 ? 0.1 : 0.06);
@@ -146,17 +186,17 @@ function scheduleAudio(g, t) {
 function spawnStep(g) {
   const bar = g >> 4, s = g & 15, info = barInfo(bar), t = g * STEP;
   if (info.type === 'dodge') {
-    if (info.d === 3 && s >= 12) return;
+    if (info.last && s >= 12) return;
     const p = dodgeBar(info.d, info.tier);
     if (p.kick.includes(s)) spawnRing(t, info.tier, bar * 0.37 + s * 0.19);
     p.bell.forEach(([st, pi], i) => { if (st === s) spawnLaser(t, pi, (i + bar) % 2 ? 'v' : 'h'); });
     if (p.slam === s) spawnSlam(t, info.cycle);
     if (p.spray.includes(s)) spawnAimed(t, info.tier);
   } else if (info.type === 'strike') {
-    if (info.d === 0 && s === 0) S.lastNode = { x: W / 2, y: 640 };
-    if (info.d < 3 && s % 4 === 0) spawnNode(t, false, false);
-    else if (info.d === 3 && s < 8 && s % 2 === 0) spawnNode(t, false, true);
-    else if (info.d === 3 && s === 8) spawnNode(t, true, false);
+    if (info.k === 0 && s === 0) S.lastNode = { x: W / 2, y: 640 };
+    if (!info.last && s % 4 === 0) spawnNode(t, false, false);
+    else if (info.last && s < 8 && s % 2 === 0) spawnNode(t, false, true);
+    else if (info.last && s === 8) spawnNode(t, true, false);
   }
 }
 function spawnRing(t, tier, off) {
@@ -174,9 +214,15 @@ function spawnLaser(t, pi, o) {
   const u = clamp((pi + 7) / 14, 0, 1);
   const pos = o === 'h' ? 400 + (1 - u) * 480 : 60 + u * 420;
   S.hazards.push({ k: 'l', o, pos, tw: t - BEAT, tf: t, te: t + 0.14, w: 34 });
+  // Suno 모드: 원래 합성 비트의 카우벨을 레이저 발사음으로 (합성 모드는 음악에 이미 있음)
+  if (SONG) Sound.bell(ctxAt(t), D5 * semi(pi), 0.26);
 }
+// 곡 시간 → 오디오 컨텍스트 시간
+function ctxAt(songT) { return S.t0 + songT; }
 function spawnSlam(t, cycle) {
   S.hazards.push({ k: 's', side: cycle % 2 === 0 ? 'L' : 'R', tw: t - BEAT * 2, tf: t, te: t + 0.25 });
+  // Suno 모드: 원래 슬램 사운드 (빅 킥 + 808 + 크래시)
+  if (SONG) { const at = ctxAt(t); Sound.kick(at, true); Sound.bass(at, D2 * semi(-5), 0.9, 1.0); Sound.crash(at, 0.18); }
 }
 function spawnNode(t, fin, near) {
   let x = BOSS_X, y = BOSS_Y;
@@ -196,25 +242,26 @@ function spawnNode(t, fin, near) {
 // ================= 비트 이벤트 (실시간 커서) =================
 function onStep(g) {
   const bar = g >> 4, s = g & 15, info = barInfo(bar), t = g * STEP;
-  if (kicksOf(info).includes(s) && !(info.type === 'dodge' && info.d === 3 && s >= 12)) S.pulse = 1;
+  if (kicksOf(info).includes(s) && !(info.type === 'dodge' && info.last && s >= 12)) S.pulse = 1;
+  if (info.type === 'end' && s === 0) { timeUp(t); return; }
   if (info.type === 'intro' && s === 0) {
     popText(bar === 0 ? 'READY' : 'DRAG TO DODGE', W / 2, H * 0.45, { size: bar === 0 ? 56 : 34, dur: BAR * 900, chroma: true });
   }
   if (info.type === 'dodge') {
-    if (info.d === 0 && s === 0) {
+    if (info.k === 0 && s === 0) {
       if (S.vphase !== 'dodge') { S.vphase = 'dodge'; S.flash = 0.7; S.flashCol = '#000000'; S.nodes = []; }
       popText('DODGE', W / 2, H * 0.45, { size: 48, dur: 600, chroma: true });
     }
-    if (info.d === 3 && s === 12) { // 캐치 포인트
+    if (info.last && s === 12) { // 캐치 포인트
       S.catchT = t; S.shake = 0.3;
       popText('COUNTER', W / 2, H * 0.45, { size: 78, dur: BEAT * 1000, chroma: true, rise: 0, pop: 1.8 });
     }
   }
   if (info.type === 'strike') {
-    if (info.d === 0 && s === 0) drop();
-    if (info.d === 3 && s === 12) {
+    if (info.k === 0 && s === 0) drop();
+    if (info.last && s === 12) {
       S.shake = 0.7; S.gauge = 0;
-      popText(`${S.cycleDmg} DMG`, W / 2, H * 0.5, { size: 52, col: 'acc', dur: 900, chroma: true });
+      popText(`${S.cycleDmg} DMG`, W / 2, H * 0.58, { size: 52, col: 'acc', dur: 900, chroma: true });
     }
   }
 }
@@ -236,17 +283,24 @@ function songTime() {
   const ac = Sound.ctx;
   return ac.currentTime - S.t0 - (ac.outputLatency || 0) + opts.offset;
 }
+let pendingStart = false;
 function startRun() {
   Sound.init();
+  if (SONG && !Sound.songBuf) {          // 곡 디코딩 대기
+    if (!pendingStart) { pendingStart = true; Sound.loadSong().then(() => { pendingStart = false; startRun(); }); }
+    return;
+  }
   Sound.newBus();
   const keepX = S.player.x, keepY = S.player.y;
   S = freshState();
   S.mode = 'play';
-  const off = startBar * BAR;
-  S.t0 = Sound.ctx.currentTime + 0.3 - off;
+  const off = startBar * BAR, ts = Sound.ctx.currentTime + 0.3;
+  S.t0 = ts - off;
+  if (SONG) Sound.playSong(ts, off + SONG.offset, opts.filter ? barInfo(startBar).type : 'strike');
   S.audioStep = S.gameStep = startBar * 16;
   S.evStep = startBar * 16 - 1;
   if (startBar > 0) { S.player.x = keepX; S.player.y = keepY; }
+  if (barInfo(startBar).type === 'strike') S.vphase = 'strike';   // 반격 도중부터 시작한 경우
 }
 function pump() {
   if (S.mode !== 'play' || !Sound.ctx) return;
@@ -338,6 +392,10 @@ function playerHit(T) {
   Sound.sfxHit();
   if (navigator.vibrate) navigator.vibrate(60);
   if (S.lives <= 0) die(T);
+}
+function timeUp(T) {
+  S.timeUp = true; S.mode = 'dead'; S.endT = T; finishRun();
+  Sound.fadeOut(1.5);
 }
 function die(T) {
   S.mode = 'dead'; S.endT = T; finishRun();
@@ -454,6 +512,25 @@ function drawGrid(pal, T) {
   for (let x = 0; x <= W; x += 60) { ctx.moveTo(x + 0.5, 0); ctx.lineTo(x + 0.5, H); }
   for (let y = off - 60; y <= H; y += 60) { ctx.moveTo(0, y + 0.5); ctx.lineTo(W, y + 0.5); }
   ctx.stroke();
+}
+
+// 배경 진행 게이지: 구간 진행도를 화면 전체 왼→오 채움으로. 끝선은 박마다 맥동, 마디 구분선.
+function drawProgress(pal, T) {
+  if (T < 0) return;
+  const info = barInfo(Math.floor(T / BAR));
+  if (info.type !== 'dodge' && info.type !== 'strike') return;
+  const inBar = (T % BAR) / BAR, prog = (info.k + inBar) / info.len;
+  const x = info.type === 'strike' ? W * (1 - prog) : W * prog;   // 회피: 왼→오 차오름, 반격: 오→왼 빠짐
+  const bp = (T % BEAT) / BEAT, beatK = 1 - bp;           // 박 직후 1 → 0
+  const warn = info.type === 'dodge' && info.last;        // 캐치 직전 마디
+  ctx.fillStyle = warn ? `rgba(${pal.warn},${0.06 + beatK * 0.05})` : `rgba(${pal.grid},${0.06 + beatK * 0.03})`;
+  ctx.fillRect(0, 0, x, H);
+  // 마디 구분선
+  ctx.fillStyle = `rgba(${pal.grid},0.07)`;
+  for (let i = 1; i < info.len; i++) ctx.fillRect(Math.round(W * i / info.len), 0, 1, H);
+  // 끝선
+  ctx.fillStyle = warn ? `rgba(${pal.warn},${0.35 + beatK * 0.5})` : `rgba(${pal.grid},${0.12 + beatK * 0.3})`;
+  ctx.fillRect(x - 1, 0, 2 + beatK * 3, H);
 }
 
 function drawAreaHazards(pal, ht) {
@@ -663,19 +740,8 @@ function drawHUD(pal, T) {
 
   if (T >= 0) {
     const info = barInfo(Math.floor(T / BAR));
-    const label = info.type === 'strike' ? 'STRIKE' : info.type === 'dodge' ? 'DODGE' : 'READY';
+    const label = info.type === 'strike' ? 'STRIKE' : info.type === 'dodge' ? 'DODGE' : info.type === 'end' ? '' : 'READY';
     text(label, W / 2, 58, 16, info.type === 'strike' ? pal.acc : pal.fg);
-    if (info.type !== 'intro') {
-      for (let i = 0; i < 4; i++) {
-        ctx.fillStyle = i <= info.d ? (info.type === 'strike' ? pal.acc : pal.fg) : `rgba(${pal.grid},0.18)`;
-        ctx.fillRect(W / 2 - 39 + i * 20, 74, 16, 5);
-      }
-    }
-    const beat = Math.floor(T / BEAT) % 4, bp = (T % BEAT) / BEAT;
-    for (let i = 0; i < 4; i++) {
-      ctx.fillStyle = pal.fg; ctx.globalAlpha = i === beat ? 1 - bp * 0.6 : 0.15;
-      ctx.beginPath(); ctx.arc(W / 2 - 24 + i * 16, 92, 3, 0, Math.PI * 2); ctx.fill();
-    }
     ctx.globalAlpha = 1;
   }
 
@@ -691,7 +757,7 @@ function drawHUD(pal, T) {
   text('GRAZE', gx, gy - 12, 11, pal.fg, { align: 'left', alpha: 0.6 });
   text(`x${(1 + S.gauge / 50).toFixed(1)}`, gx + gw + 12, gy + 4, 16, pal.acc, { align: 'left' });
   if (S.combo > 1) text(`${S.combo} COMBO`, W - 30, H - 78, 16, pal.fg, { align: 'right' });
-  const flags = [opts.god && 'GOD', opts.offset && `SYNC ${Math.round(opts.offset * 1000)}ms`].filter(Boolean).join('  ');
+  const flags = [opts.god && 'GOD', SONG && !opts.filter && 'FILTER OFF', opts.offset && `SYNC ${Math.round(opts.offset * 1000)}ms`].filter(Boolean).join('  ');
   if (flags) text(flags, 30, 110, 12, pal.acc, { align: 'left' });
 }
 
@@ -704,7 +770,7 @@ function drawTitle(pal, now) {
   const best = +(localStorage.getItem('cb_best') || 0);
   if (best) text(`BEST ${best.toLocaleString()}`, W / 2, 516, 15, pal.fg, { alpha: 0.55 });
   const bp = (t % BEAT) / BEAT;
-  text('TAP TO START', W / 2, 760, 24, pal.acc, { alpha: 1 - bp * 0.7 });
+  text(pendingStart ? 'LOADING' : 'TAP TO START', W / 2, 760, 24, pal.acc, { alpha: 1 - bp * 0.7 });
 }
 
 function rank() {
@@ -752,7 +818,7 @@ function drawEnd(pal, now) {
 
 function drawDeadScreen(pal, e) {
   if (e >= 0.35) once('down', () => { S.shake = 0.8; Sound.sfxStamp(false); });
-  stamp('DOWN', W / 2, H * 0.32, 96, pal, (e - 0.35) / 0.14);
+  stamp(S.timeUp ? 'TIME UP' : 'DOWN', W / 2, H * 0.32, S.timeUp ? 76 : 96, pal, (e - 0.35) / 0.14);
   if (e < 0.7) return;
   const a = ease((e - 0.7) / 0.3);
   const hpP = S.bossHp / BOSS_HP, bx = 70, bw = W - 140, by = H * 0.44;
@@ -765,7 +831,7 @@ function drawDeadScreen(pal, e) {
   text('SCORE', W / 2, H * 0.54, 13, pal.fg, { alpha: a * 0.6 });
   text(Math.round(S.score * a).toLocaleString(), W / 2, H * 0.585, 46, pal.fg, { alpha: a });
   if (S.newBest) text('NEW BEST', W / 2, H * 0.64, 16, pal.acc, { alpha: a });
-  else text(`BEST ${S.best.toLocaleString()}`, W / 2, H * 0.64, 14, pal.fg, { alpha: a * 0.55 });
+  else if (S.best > 0) text(`BEST ${S.best.toLocaleString()}`, W / 2, H * 0.64, 14, pal.fg, { alpha: a * 0.55 });
 }
 
 function drawWinScreen(pal, e) {
@@ -833,6 +899,7 @@ function draw(T, now) {
   ctx.translate(W / 2 + (Math.random() * 2 - 1) * sh, H / 2 + (Math.random() * 2 - 1) * sh);
   ctx.scale(zoom, zoom); ctx.translate(-W / 2, -H / 2);
   drawGrid(pal, T);
+  drawProgress(pal, T);
   drawAreaHazards(pal, ht);
   drawBoss(pal, T);
   drawBullets(pal, ht);
@@ -922,6 +989,10 @@ addEventListener('keydown', e => {
   const k = e.key.toLowerCase();
   if (k === 'g') opts.god = !opts.god;
   if (k === 'h') opts.hitbox = !opts.hitbox;
+  if (k === 'f') {
+    opts.filter = !opts.filter; localStorage.setItem('cb_filter', opts.filter ? '1' : '0');
+    if (!opts.filter && S.mode === 'play' && Sound.ctx) Sound.songOpen(Sound.ctx.currentTime);
+  }
   if (k === 'p' || k === 'escape') setPaused(!S.paused);
   if (k === 'r') { Sound.init(); startRun(); }
   if (e.key === '[' || e.key === ']') {
