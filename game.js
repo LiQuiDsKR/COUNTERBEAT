@@ -6,7 +6,15 @@ const INTRO_BARS = 2;
 const BOSS_X = W / 2, BOSS_Y = 230;
 const SENS = 1.3;                       // 드래그 감도
 const HIT_R = 4, PLAYER_R = 10, GRAZE_R = 30;
-const MAX_LIVES = 5;                    // 체력 칸. FINISH 성공 시 1칸 회복
+const NODE_LEAD = BEAT * 1.5, FIN_LEAD = BEAT * 2.5;   // 공격 노드 예고 (1박/2박 ↔ 2박/3박 중간)
+const NODE_R = 46, FIN_R = 80;
+const GAP_BEAT = NODE_R * 2 * 1.0;   // 정박 노드 사이 최소 여백: 지름 1개
+const GAP_RUN = NODE_R * 2 * 0.5;    // 마지막 마디 4연타 사이 여백: 지름 0.5개
+const GAP_BOSS = NODE_R * 2;         // 보스(FINISH 자리)와의 여백
+const FIELD = { x0: 52, x1: W - 52, y0: 320, y1: H - 130 };   // 노드가 놓이는 영역 (보스 주변은 여백 규칙으로 제외)
+const NODE_EARLY = 0.25, NODE_LATE = 0.25;        // 벨 수 있는 창 (원래 -0.22 / +0.2)
+const JUDGE_PERFECT = 0.08, JUDGE_GREAT = 0.15;    // (원래 0.07 / 0.13)
+const MAX_LIVES = 5;                    // 체력 칸. 반격 풀콤보 시 1칸 회복
 const BULLET_HIT = 0.6;                 // 탄 실제 판정 = 보이는 반지름 × 0.6 (탄막 관례)
 let BOSS_HP = 1000;
 const D5 = 587.33, D2 = 73.42;
@@ -66,7 +74,7 @@ if (SONG) {
     secN++;
     for (let b = st; b < en; b++) {
       const k = b - st, last = k === len - 1;
-      const tier = Math.min(3, Math.floor(b / 28));
+      const tier = Math.min(SONG.maxTier ?? 3, Math.floor(b / (SONG.tierBars ?? 28)));
       let d = k;
       if (type === 'dodge') d = last ? 3 : k % 3;          // 마지막 마디 = 빌드업+캐치
       SONG_BARS[b] = { type, d, k, len, last, cycle: type === 'strike' ? strikeN - 1 : secN, tier };
@@ -79,7 +87,7 @@ function freshState() {
   return {
     mode: 'title', paused: false, t0: 0, audioStep: 0, gameStep: 0, evStep: -1,
     player: { x: W / 2, y: H * 0.78 }, prevX: W / 2, prevY: H * 0.78, trail: [],
-    lives: MAX_LIVES, healPulse: 0, invulnUntil: -1, bossHp: BOSS_HP, bossShown: BOSS_HP, bossFlash: 0,
+    lives: MAX_LIVES, healPulse: 0, strikeMiss: false, strikeHits: 0, invulnUntil: -1, bossHp: BOSS_HP, bossShown: BOSS_HP, bossFlash: 0,
     hazards: [], nodes: [], parts: [], texts: [],
     gauge: 0, combo: 0, maxCombo: 0, cycleDmg: 0, lastNode: null, slashN: 0,
     stats: { perfect: 0, great: 0, good: 0, miss: 0, graze: 0, hits: 0 },
@@ -195,13 +203,13 @@ function spawnStep(g) {
     if (p.spray.includes(s)) spawnAimed(t, info.tier);
   } else if (info.type === 'strike') {
     if (info.k === 0 && s === 0) S.lastNode = { x: W / 2, y: 640 };
-    if (!info.last && s % 4 === 0) spawnNode(t, false, false);
-    else if (info.last && s < 8 && s % 2 === 0) spawnNode(t, false, true);
-    else if (info.last && s === 8) spawnNode(t, true, false);
+    if (!info.last && s % 4 === 0) spawnNode(t, 'beat');
+    else if (info.last && s < 8 && s % 2 === 0) spawnNode(t, 'run', s / 2);   // 마지막 마디: 8분 4연타
+    else if (info.last && s === 8) spawnNode(t, 'fin');
   }
 }
 function spawnRing(t, tier, off) {
-  const n = 12 + tier * 2, sp = 145 + tier * 18;
+  const n = 10 + tier * 2, sp = 140 + tier * 18;
   for (let i = 0; i < n; i++) {
     const a = off + i / n * Math.PI * 2;
     S.hazards.push({ k: 'b', t0: t, x0: BOSS_X, y0: BOSS_Y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, r: 8 });
@@ -226,19 +234,73 @@ function spawnSlam(t, cycle) {
   const at = ctxAt(t);
   if (at > Sound.ctx.currentTime - 0.02) Sound.SLAMS[SLAM_SFX].play(at, cycle % 2 === 0 ? -0.4 : 0.4);
 }
-function spawnNode(t, fin, near) {
-  let x = BOSS_X, y = BOSS_Y;
-  if (!fin) {
-    const L = S.lastNode || { x: W / 2, y: 640 };
-    for (let k = 0; k < 40; k++) {
-      const a = Math.random() * Math.PI * 2, dd = near ? 110 + Math.random() * 60 : 170 + Math.random() * 110;
-      x = L.x + Math.cos(a) * dd; y = L.y + Math.sin(a) * dd;
-      if (x > 70 && x < W - 70 && y > 380 && y < H - 150) break;
-    }
-    x = clamp(x, 70, W - 70); y = clamp(y, 380, H - 150);
+// 후보 위치가 보스(FINISH 자리)·대기 중 노드와 얼마나 떨어졌나. 0 이상이면 여백 조건 만족
+// t: 새 노드의 정박 시간. 화면에 같이 보이는 노드만 검사 (새 노드가 뜨기 전에 사라지는 노드는 제외)
+function nodeClearance(x, y, gap, t, bossGap = GAP_BOSS) {
+  let worst = Math.hypot(x - BOSS_X, y - BOSS_Y) - (NODE_R + FIN_R + bossGap);
+  for (const n of S.nodes) {
+    if (n.state || n.t + NODE_LATE < t - NODE_LEAD) continue;
+    worst = Math.min(worst, Math.hypot(x - n.x, y - n.y) - (NODE_R + n.r + gap));
   }
+  return worst;
+}
+const inField = (x, y) => x >= FIELD.x0 && x <= FIELD.x1 && y >= FIELD.y0 && y <= FIELD.y1;
+
+// 정박 노드: 이전 노드에서 지름 1개 여백 이상 떨어진 랜덤 위치
+function pickBeatPos(L, t) {
+  const minD = NODE_R * 2 + GAP_BEAT;
+  let best = null, bestC = -Infinity;
+  // 1순위: 지름 1개 여백. 자리가 정말 없으면 2순위로 지름 0.5개까지 허용
+  for (const gap of [GAP_BEAT, GAP_RUN]) {
+    for (let k = 0; k < 150; k++) {
+      const a = Math.random() * Math.PI * 2, d = minD + Math.random() * 90;
+      const x = L.x + Math.cos(a) * d, y = L.y + Math.sin(a) * d;
+      if (!inField(x, y)) continue;
+      const c = nodeClearance(x, y, gap, t, gap);
+      if (c >= 0) return [x, y];
+      if (c > bestC) { bestC = c; best = [x, y]; }
+    }
+  }
+  return best || [FIELD.x0 + Math.random() * (FIELD.x1 - FIELD.x0), FIELD.y0 + Math.random() * (FIELD.y1 - FIELD.y0)];
+}
+// 4연타: 시작점에서 한 방향으로 완만하게 휘며 이어짐 (지그재그 금지)
+function planRun(L, t) {
+  const step = NODE_R * 2 + GAP_RUN;
+  let best = null, bestC = -Infinity;
+  // 1순위: 다른 노드·보스와 지름 1개 여백. 안 되면 지름 0.5개
+  for (const gap of [GAP_BEAT, GAP_RUN]) {
+    for (let k = 0; k < 600; k++) {
+      const a0 = Math.random() * Math.PI * 2, d0 = NODE_R * 2 + GAP_BEAT + Math.random() * 110;
+      const pts = [[L.x + Math.cos(a0) * d0, L.y + Math.sin(a0) * d0]];
+      // 꺾이는 각: 관절 내각 150~170° (= 방향 전환 10~30°), 항상 같은 쪽으로.
+      // 첫 꺾임을 정하면 다음 꺾임은 그 값에서 ±3° 이내 → 일관된 곡선
+      const D = Math.PI / 180, sgn = Math.random() < 0.5 ? -1 : 1;
+      const t1 = (10 + Math.random() * 20) * D;
+      const t2 = clamp(t1 + (Math.random() * 6 - 3) * D, 10 * D, 30 * D);
+      let a = Math.random() * Math.PI * 2;
+      for (const turn of [0, t1, t2]) {
+        a += sgn * turn;
+        const [px, py] = pts[pts.length - 1];
+        pts.push([px + Math.cos(a) * step, py + Math.sin(a) * step]);
+      }
+      if (!pts.every(([x, y]) => inField(x, y))) continue;
+      // 4연타끼리 간격은 step으로 보장. 다른 노드·보스와는 gap
+      let c = Infinity;
+      for (let i = 0; i < 4; i++) c = Math.min(c, nodeClearance(pts[i][0], pts[i][1], gap, t + i * STEP * 2, gap));
+      if (c >= 0) return pts;
+      if (c > bestC) { bestC = c; best = pts; }
+    }
+  }
+  return best || [[80, 640], [218, 640], [356, 640], [470, 640]];
+}
+function spawnNode(t, kind, idx = 0) {
+  let x = BOSS_X, y = BOSS_Y;
+  const L = S.lastNode || { x: W / 2, y: 640 };
+  if (kind === 'beat') [x, y] = pickBeatPos(L, t);
+  else if (kind === 'run') { if (idx === 0 || !S.runPlan) S.runPlan = planRun(L, t); [x, y] = S.runPlan[idx]; }
   S.lastNode = { x, y };
-  S.nodes.push({ x, y, t, fin, r: fin ? 78 : 40, lead: fin ? BEAT * 2 : BEAT, state: 0 });
+  const fin = kind === 'fin';
+  S.nodes.push({ x, y, t, fin, kind, r: fin ? FIN_R : NODE_R, lead: fin ? FIN_LEAD : NODE_LEAD, state: 0 });
 }
 
 // ================= 비트 이벤트 (실시간 커서) =================
@@ -264,6 +326,17 @@ function onStep(g) {
     if (info.last && s === 12) {
       S.shake = 0.7; S.gauge = 0;
       popText(`${S.cycleDmg} DMG`, W / 2, H * 0.58, { size: 52, col: 'acc', dur: 900, chroma: true });
+      // 회복: 이번 반격 노드를 하나도 안 놓치면(풀콤보) 체력 1칸. 꽉 찼으면 점수 보너스
+      if (!S.strikeMiss && S.strikeHits > 0) {
+        popText('FULL COMBO', W / 2, H * 0.66, { size: 30, col: 'fg', dur: 1000, chroma: true });
+        if (S.lives < MAX_LIVES) {
+          S.lives++; S.healPulse = 1; Sound.sfxHeal();
+          popText('+1 HP', S.player.x, S.player.y - 40, { size: 24, col: 'acc', dur: 900, rise: 50 });
+        } else S.score += 500;
+      }
+      S.strikeMiss = false; S.strikeHits = 0;
+      // 다음 반격 준비: 첫 노드는 드롭 박 0.22초 전부터 벨 수 있어서 드롭 시점이 아니라 여기서 초기화
+      S.slashN = 0; S.cycleDmg = 0;
     }
   }
 }
@@ -275,7 +348,7 @@ function drop() {
     }
   }
   S.hazards = []; S.catchT = null; S.vphase = 'strike';
-  S.flash = 1; S.flashCol = '#ffffff'; S.shake = 1.2; S.slashN = 0; S.cycleDmg = 0;
+  S.flash = 1; S.flashCol = '#ffffff'; S.shake = 1.2;
   popText('STRIKE!', W / 2, H * 0.45, { size: 72, col: 'acc', dur: 700, chroma: true });
   if (navigator.vibrate) navigator.vibrate(30);
 }
@@ -368,12 +441,12 @@ function update(T, dt) {
   const speed = Math.hypot(px - sx, py - sy) / Math.max(dt, 1e-3);
   for (const n of S.nodes) {
     if (n.state) continue;
-    if (T > n.t + 0.2) {
-      n.state = 2; S.stats.miss++; S.combo = 0;
+    if (T > n.t + NODE_LATE) {
+      n.state = 2; S.stats.miss++; S.combo = 0; S.strikeMiss = true;
       popText('MISS', n.x, n.y - 40, { size: 20, dur: 500 });
       continue;
     }
-    if (T >= n.t - 0.22 && speed > 140 && segDist(n.x, n.y, sx, sy, px, py) <= n.r + PLAYER_R) {
+    if (T >= n.t - NODE_EARLY && speed > 100 && segDist(n.x, n.y, sx, sy, px, py) <= n.r + PLAYER_R) {
       nodeHit(n, T);
       if (S.mode !== 'play') return;
     }
@@ -416,10 +489,10 @@ function die(T) {
 function nodeHit(n, T) {
   const dt = Math.abs(T - n.t);
   let j, jm, label;
-  if (dt <= 0.07) { j = 'perfect'; jm = 1; label = 'PERFECT'; }
-  else if (dt <= 0.13) { j = 'great'; jm = 0.7; label = 'GREAT'; }
+  if (dt <= JUDGE_PERFECT) { j = 'perfect'; jm = 1; label = 'PERFECT'; }
+  else if (dt <= JUDGE_GREAT) { j = 'great'; jm = 0.7; label = 'GREAT'; }
   else { j = 'good'; jm = 0.4; label = 'GOOD'; }
-  S.stats[j]++; S.combo++; S.maxCombo = Math.max(S.maxCombo, S.combo);
+  S.stats[j]++; S.combo++; S.strikeHits++; S.maxCombo = Math.max(S.maxCombo, S.combo);
   const mult = 1 + S.gauge / 50;
   const dmg = Math.round((n.fin ? 40 : 10) * jm * mult * (1 + Math.min(S.combo, 20) * 0.02));
   S.bossHp = Math.max(0, S.bossHp - dmg); S.cycleDmg += dmg; S.score += dmg * 10; S.bossFlash = 0.15;
@@ -430,14 +503,6 @@ function nodeHit(n, T) {
   S.shake = Math.max(S.shake, n.fin ? 1.3 : 0.35);
   if (n.fin) {
     S.flash = 0.6; S.flashCol = '#ff1e56';
-    // 회복: FINISH 성공 = 체력 1칸. 꽉 찼으면 점수 보너스
-    if (S.lives < MAX_LIVES) {
-      S.lives++; S.healPulse = 1; Sound.sfxHeal();
-      popText('+1 HP', S.player.x, S.player.y - 40, { size: 24, col: 'acc', dur: 900, rise: 50 });
-    } else {
-      S.score += 500;
-      popText('FULL +500', S.player.x, S.player.y - 40, { size: 20, col: 'acc', dur: 900, rise: 50 });
-    }
   }
   popText(label, n.x, n.y - 50, { size: n.fin ? 44 : 26, col: j === 'perfect' ? 'acc' : 'fg', dur: 500 });
   popText(String(dmg), n.x + 34, n.y - 8, { size: 18, dur: 600, rise: 60 });
@@ -636,31 +701,58 @@ function drawBoss(pal, T) {
   ctx.restore();
 }
 
+// 순서 가독성: 다음 노드 진하게 + 맥동 테두리, 그다음은 반투명, 그 뒤는 흐리게.
+// 다음 → 그다음 노드로 점선 화살표(경로)를 그려 방향을 미리 보여줌.
+const NODE_ALPHA = [1, 0.5, 0.2];
 function drawNodes(pal, T) {
-  for (const n of S.nodes) {
-    if (n.state || T < n.t - n.lead) continue;
+  const vis = S.nodes.filter(n => !n.state && T >= n.t - n.lead).sort((a, b) => a.t - b.t);
+  const beatK = 1 - (T % BEAT) / BEAT;
+  // 경로 화살표 (뒤에서부터 그려서 다음 노드 화살표가 위로)
+  for (let i = Math.min(vis.length - 1, 2); i >= 1; i--) {
+    const a = vis[i - 1], b = vis[i];
+    const dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy);
+    if (d < a.r + b.r + 8) continue;
+    const ux = dx / d, uy = dy / d;
+    const sx = a.x + ux * (a.r + 6), sy = a.y + uy * (a.r + 6), ex = b.x - ux * (b.r + 8), ey = b.y - uy * (b.r + 8);
+    ctx.strokeStyle = pal.acc; ctx.fillStyle = pal.acc;
+    ctx.globalAlpha = i === 1 ? 0.55 : 0.2; ctx.lineWidth = 3; ctx.setLineDash([8, 7]);
+    ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(ex, ey); ctx.stroke(); ctx.setLineDash([]);
+    ctx.beginPath(); ctx.moveTo(ex, ey);
+    ctx.lineTo(ex - ux * 14 - uy * 8, ey - uy * 14 + ux * 8); ctx.lineTo(ex - ux * 14 + uy * 8, ey - uy * 14 - ux * 8);
+    ctx.closePath(); ctx.fill();
+  }
+  // 뒤 순서부터 그려서 다음 노드가 맨 위
+  for (let i = vis.length - 1; i >= 0; i--) {
+    const n = vis[i], rank = i;
     const p = clamp((n.t - T) / n.lead, 0, 1);       // 1 → 0 (정박)
-    const late = T > n.t ? clamp((T - n.t) / 0.2, 0, 1) : 0;
-    const a = 1 - late * 0.7;
-    // 보스와 연결선
-    ctx.strokeStyle = pal.acc; ctx.globalAlpha = 0.25 * a; ctx.lineWidth = 2; ctx.setLineDash([4, 6]);
-    if (!n.fin) { ctx.beginPath(); ctx.moveTo(BOSS_X, BOSS_Y); ctx.lineTo(n.x, n.y); ctx.stroke(); }
-    ctx.setLineDash([]);
-    // 접근 링
-    ctx.globalAlpha = (1 - p * 0.6) * a; ctx.lineWidth = 3;
-    ctx.beginPath(); ctx.arc(n.x, n.y, n.r * (1 + 1.6 * p), 0, Math.PI * 2); ctx.stroke();
+    const late = T > n.t ? clamp((T - n.t) / NODE_LATE, 0, 1) : 0;
+    const a = (1 - late * 0.7) * NODE_ALPHA[Math.min(rank, 2)];
+    ctx.strokeStyle = pal.acc;
+    if (rank === 0 && !n.fin) {   // 보스 연결선은 다음 노드만
+      ctx.globalAlpha = 0.2 * a; ctx.lineWidth = 2; ctx.setLineDash([4, 6]);
+      ctx.beginPath(); ctx.moveTo(BOSS_X, BOSS_Y); ctx.lineTo(n.x, n.y); ctx.stroke(); ctx.setLineDash([]);
+    }
+    // 접근 링: 다음·그다음만
+    if (rank <= 1) {
+      ctx.globalAlpha = (1 - p * 0.6) * a; ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.arc(n.x, n.y, n.r * (1 + 1.6 * p), 0, Math.PI * 2); ctx.stroke();
+    }
     // 본체
-    ctx.globalAlpha = 0.18 * a; ctx.fillStyle = pal.acc;
+    ctx.globalAlpha = (rank === 0 ? 0.3 : 0.15) * a; ctx.fillStyle = pal.acc;
     ctx.beginPath(); ctx.arc(n.x, n.y, n.r, 0, Math.PI * 2); ctx.fill();
-    ctx.globalAlpha = a; ctx.lineWidth = 5;
+    ctx.globalAlpha = a; ctx.lineWidth = rank === 0 ? 6 : 4;
     ctx.beginPath(); ctx.arc(n.x, n.y, n.r, 0, Math.PI * 2); ctx.stroke();
+    if (rank === 0) {   // 다음 노드: 박마다 맥동하는 바깥 테두리
+      ctx.globalAlpha = 0.35 * beatK * a; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(n.x, n.y, n.r + 8 + beatK * 6, 0, Math.PI * 2); ctx.stroke();
+    }
     if (n.fin) {
-      ctx.lineWidth = 6; const r = n.r * 0.6;
+      ctx.globalAlpha = a; ctx.lineWidth = 6; const r = n.r * 0.6;
       ctx.beginPath(); ctx.moveTo(n.x - r, n.y - r); ctx.lineTo(n.x + r, n.y + r);
       ctx.moveTo(n.x + r, n.y - r); ctx.lineTo(n.x - r, n.y + r); ctx.stroke();
       text('FINISH', n.x, n.y + n.r + 26, 20, pal.acc, { alpha: a });
     } else {
-      ctx.fillStyle = pal.acc; ctx.beginPath(); ctx.arc(n.x, n.y, 6, 0, Math.PI * 2); ctx.fill();
+      ctx.globalAlpha = a; ctx.fillStyle = pal.acc; ctx.beginPath(); ctx.arc(n.x, n.y, rank === 0 ? 8 : 5, 0, Math.PI * 2); ctx.fill();
     }
     ctx.globalAlpha = 1;
   }
