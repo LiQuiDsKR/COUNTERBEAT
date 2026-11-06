@@ -4,7 +4,9 @@ const W = 540, H = 960;
 const BPM = 150, BEAT = 60 / BPM, STEP = BEAT / 4, BAR = BEAT * 4;
 const INTRO_BARS = 2;
 const BOSS_X = W / 2, BOSS_Y = 230;
-const SENS = 1.3;                       // 드래그 감도
+// 드래그 감도 (설정에서 조절): 손가락 이동량 × 배율. 가속을 켜면 빠르게 휘두를수록 배율이 올라감(최대 기본 × 1.75)
+const SENS_LEVELS = [1.2, 1.4, 1.6, 1.9, 2.2];             // 이동 감도 1~5
+const ACCEL_LEVELS = [[0, 'OFF'], [0.5, '약'], [0.9, '중'], [1.4, '강']];   // 손가락 속도(css px/ms)당 추가 배율
 const HIT_R = 4, PLAYER_R = 10, GRAZE_R = 30;
 const NODE_LEAD = BEAT * 1.5, FIN_LEAD = BEAT * 2.5;   // 공격 노드 예고 (1박/2박 ↔ 2박/3박 중간)
 const NODE_R = 46, FIN_R = 80;
@@ -13,7 +15,7 @@ const GAP_RUN = NODE_R * 2 * 0.5;    // 마지막 마디 4연타 사이 여백: 
 const GAP_BOSS = NODE_R * 2;         // 보스(FINISH 자리)와의 여백
 const FIELD = { x0: 52, x1: W - 52, y0: 320, y1: H - 130 };   // 노드가 놓이는 영역 (보스 주변은 여백 규칙으로 제외)
 const NODE_EARLY = 0.25, NODE_LATE = 0.25;        // 벨 수 있는 창 (원래 -0.22 / +0.2)
-const JUDGE_PERFECT = 0.08, JUDGE_GREAT = 0.15;    // (원래 0.07 / 0.13)
+const JUDGE_PERFECT = 0.11, JUDGE_GREAT = 0.18;    // 정박 ±초 (0.07/0.13 → 0.08/0.15 → 지금)
 const MAX_LIVES = 5;                    // 체력 칸. 반격 풀콤보 시 1칸 회복
 const BULLET_HIT = 0.6;                 // 탄 실제 판정 = 보이는 반지름 × 0.6 (탄막 관례)
 let BOSS_HP = 1000;
@@ -53,9 +55,19 @@ function resize() {
 addEventListener('resize', resize); resize();
 
 // ================= 상태 =================
-const LASER_SFX = 1, SLAM_SFX = 4;   // 고정: Railgun, Glitch Crush (후보는 lab.html)
-const opts = { god: false, hitbox: false, offset: +(localStorage.getItem('cb_offset') || 0),
-  filter: localStorage.getItem('cb_filter') !== '0' };   // 공수 교대 DJ 필터 (F 키)
+// 설정값 (설정 화면 / localStorage). 기본: 감도 3, 가속 중, Railgun, Glitch Crush, DJ 필터 ON
+const ls = (k, d) => { const v = localStorage.getItem('cb_' + k); return v === null ? d : +v; };
+const opts = { god: false, hitbox: false,
+  offset: ls('offset', 0),
+  filter: localStorage.getItem('cb_filter') !== '0',
+  sens: ls('sens', 2), accel: ls('accel', 2), laser: ls('laser', 1), slam: ls('slam', 4),
+  vol: ls('vol', 7), mvol: ls('mvol', 10) };   // 볼륨 0~10
+const applyVolume = () => Sound.setVolume(opts.vol / 10, opts.mvol / 10);
+applyVolume();
+function saveOpts() {
+  for (const k of ['offset', 'sens', 'accel', 'laser', 'slam', 'vol', 'mvol']) localStorage.setItem('cb_' + k, opts[k]);
+  localStorage.setItem('cb_filter', opts.filter ? '1' : '0');
+}
 const params = new URLSearchParams(location.search);
 const startBar = Math.max(0, parseInt(params.get('bar') || '0', 10) || 0);
 // 음악 모드: 기본 Suno 곡, ?music=synth 면 내장 합성 비트
@@ -69,7 +81,7 @@ if (SONG) {
   const secs = SONG.sections;
   let strikeN = 0, secN = 0;
   for (let i = 0; i < secs.length - 1; i++) {
-    const [st, type] = secs[i], en = secs[i + 1][0], len = en - st;
+    const [st, type, pattern] = secs[i], en = secs[i + 1][0], len = en - st;
     if (type === 'strike') strikeN++;
     secN++;
     for (let b = st; b < en; b++) {
@@ -77,7 +89,7 @@ if (SONG) {
       const tier = Math.min(SONG.maxTier ?? 3, Math.floor(b / (SONG.tierBars ?? 28)));
       let d = k;
       if (type === 'dodge') d = last ? 3 : k % 3;          // 마지막 마디 = 빌드업+캐치
-      SONG_BARS[b] = { type, d, k, len, last, cycle: type === 'strike' ? strikeN - 1 : secN, tier };
+      SONG_BARS[b] = { type, d, k, len, last, pattern, cycle: type === 'strike' ? strikeN - 1 : secN, tier };
     }
   }
   SONG_BARS.endBar = secs[secs.length - 1][0];
@@ -87,10 +99,10 @@ function freshState() {
   return {
     mode: 'title', paused: false, t0: 0, audioStep: 0, gameStep: 0, evStep: -1,
     player: { x: W / 2, y: H * 0.78 }, prevX: W / 2, prevY: H * 0.78, trail: [],
-    lives: MAX_LIVES, healPulse: 0, strikeMiss: false, strikeHits: 0, invulnUntil: -1, bossHp: BOSS_HP, bossShown: BOSS_HP, bossFlash: 0,
+    lives: MAX_LIVES, healPulse: 0, strikeMissN: 0, strikeHits: 0, strikeFin: false, invulnUntil: -1, bossHp: BOSS_HP, bossShown: BOSS_HP, bossFlash: 0,
     hazards: [], nodes: [], parts: [], texts: [],
     gauge: 0, combo: 0, maxCombo: 0, cycleDmg: 0, lastNode: null, slashN: 0,
-    stats: { perfect: 0, great: 0, good: 0, miss: 0, graze: 0, hits: 0 },
+    stats: { perfect: 0, great: 0, good: 0, miss: 0, graze: 0, hits: 0 }, timingSum: 0, timingN: 0,
     vphase: 'dodge', catchT: null, pulse: 0, shake: 0, flash: 0, flashCol: '#fff',
     hitstopUntil: 0, displayT: 0, endT: 0, endReal: 0,
     score: 0, newBest: false, fired: {},
@@ -100,6 +112,8 @@ let S = freshState();
 window.__cb = () => S; // 디버그용
 
 // ================= 곡 구조 =================
+const HARD_PATTERNS = ['split', 'x2', 'final'];   // 패턴3·4·FINAL (패턴1·2는 풀콤보 회복)   // WARNING 이후 어려운 반격
+const isWarn = info => info.pattern === 'split' || info.pattern === 'warning';   // WARNING 띠+경보음 구간
 const END_INFO = { type: 'end', d: 0, k: 0, len: 1, last: true, cycle: 0, tier: 0 };
 function barInfo(bar) {
   if (SONG_BARS) return SONG_BARS[bar] || END_INFO;
@@ -154,6 +168,9 @@ function scheduleAudio(g, t) {
       if (info.type === 'strike' && info.k === 0 && s === 0) Sound.songStrike(t);
     }
     if (info.type === 'strike' && info.k === 0 && s === 0) Sound.kick(t, true);
+    // WARNING 구간 첫 마디: 박마다 경보음
+    if (isWarn(info) && info.k === 0 && s % 4 === 0) Sound.alarm(t, s === 0);
+    if (info.pattern === 'final' && s === 0) Sound.crash(t, 0.3);
     return;
   }
   if (info.type === 'intro') {
@@ -199,10 +216,38 @@ function spawnStep(g) {
     const p = dodgeBar(info.d, info.tier);
     if (p.kick.includes(s)) spawnRing(t, info.tier, bar * 0.37 + s * 0.19);
     p.bell.forEach(([st, pi], i) => { if (st === s) spawnLaser(t, pi, (i + bar) % 2 ? 'v' : 'h'); });
-    if (p.slam === s) spawnSlam(t, info.cycle);
+    if (p.slam === s) spawnSlam(t);
     if (p.spray.includes(s)) spawnAimed(t, info.tier);
   } else if (info.type === 'strike') {
     if (info.k === 0 && s === 0) S.lastNode = { x: W / 2, y: 640 };
+    if (info.pattern === 'split') {
+      // SPLIT (곡이 4마디 단위와 어긋나는 구간): WARNING 후 박을 점점 잘게 쪼갬. 전부 4박 기준.
+      //   1마디: 2분음표(1·3박) → 2마디: 4분음표 → 3마디: 8분 4연타 ×2 → 4마디: 8분 4연타 + FINISH
+      if (info.k === 0 && s % 8 === 0) spawnNode(t, 'beat');
+      else if (info.k === 1 && s % 4 === 0) spawnNode(t, 'beat');
+      else if (info.k === 2 && s % 2 === 0) spawnNode(t, 'run', (s / 2) % 4);
+      else if (info.last && s < 8 && s % 2 === 0) spawnNode(t, 'run', s / 2);
+      else if (info.last && s === 8) spawnNode(t, 'fin');
+      return;
+    }
+    if (info.pattern === 'p2') {
+      // 패턴2 "클랩 더블": 1·3박은 한 번, 2·4박은 박+반박 두 번 (쿵 · 딱딱 · 쿵 · 딱딱)
+      // 곡의 클랩(2·4박)과 같이 치는 백비트 그루브. 마지막 마디는 패턴1과 같은 4연타 + FINISH
+      if (!info.last) {
+        if (s === 0 || s === 8) spawnNode(t, 'beat');
+        else if (s === 4 || s === 12) spawnNode(t, 'pair', 0);
+        else if (s === 6 || s === 14) spawnNode(t, 'pair', 1);
+      } else if (s < 8 && s % 2 === 0) spawnNode(t, 'run', s / 2);
+      else if (s === 8) spawnNode(t, 'fin');
+      return;
+    }
+    if (info.pattern === 'x2') {
+      // 2배 비트 (WARNING 이후): 4분음표 자리를 8분 4연타로. 마지막 마디는 보통과 같음
+      if (!info.last && s % 2 === 0) spawnNode(t, 'run', (s / 2) % 4);
+      else if (info.last && s < 8 && s % 2 === 0) spawnNode(t, 'run', s / 2);
+      else if (info.last && s === 8) spawnNode(t, 'fin');
+      return;
+    }
     if (!info.last && s % 4 === 0) spawnNode(t, 'beat');
     else if (info.last && s < 8 && s % 2 === 0) spawnNode(t, 'run', s / 2);   // 마지막 마디: 8분 4연타
     else if (info.last && s === 8) spawnNode(t, 'fin');
@@ -225,14 +270,16 @@ function spawnLaser(t, pi, o) {
   S.hazards.push({ k: 'l', o, pos, tw: t - BEAT * 2, tf: t, te: t + 0.14, w: 34 });   // 예고 2박 (원래 1박)
   // 레이저 소리: 고정 음높이 (멜로디 없음). 세로 레이저는 위치 따라 패닝
   const at = ctxAt(t);
-  if (at > Sound.ctx.currentTime - 0.02) Sound.LASERS[LASER_SFX].play(at, o === 'v' ? pos / W * 2 - 1 : 0);
+  if (at > Sound.ctx.currentTime - 0.02) Sound.LASERS[opts.laser].play(at, o === 'v' ? pos / W * 2 - 1 : 0);
 }
 // 곡 시간 → 오디오 컨텍스트 시간
 function ctxAt(songT) { return S.t0 + songT; }
-function spawnSlam(t, cycle) {
-  S.hazards.push({ k: 's', side: cycle % 2 === 0 ? 'L' : 'R', tw: t - BEAT * 2, tf: t, te: t + 0.25 });
+function spawnSlam(t) {
+  // 슬램마다 좌우 번갈아 (예전엔 cycle 홀짝 기준이라 Suno 비트맵에서 항상 왼쪽만 나왔음)
+  const side = (S.slamN = (S.slamN || 0) + 1) % 2 ? 'L' : 'R';
+  S.hazards.push({ k: 's', side, tw: t - BEAT * 2, tf: t, te: t + 0.25 });
   const at = ctxAt(t);
-  if (at > Sound.ctx.currentTime - 0.02) Sound.SLAMS[SLAM_SFX].play(at, cycle % 2 === 0 ? -0.4 : 0.4);
+  if (at > Sound.ctx.currentTime - 0.02) Sound.SLAMS[opts.slam].play(at, side === 'L' ? -0.4 : 0.4);
 }
 // 후보 위치가 보스(FINISH 자리)·대기 중 노드와 얼마나 떨어졌나. 0 이상이면 여백 조건 만족
 // t: 새 노드의 정박 시간. 화면에 같이 보이는 노드만 검사 (새 노드가 뜨기 전에 사라지는 노드는 제외)
@@ -269,7 +316,7 @@ function planRun(L, t) {
   let best = null, bestC = -Infinity;
   // 1순위: 다른 노드·보스와 지름 1개 여백. 안 되면 지름 0.5개
   for (const gap of [GAP_BEAT, GAP_RUN]) {
-    for (let k = 0; k < 600; k++) {
+    for (let k = 0; k < 1500; k++) {
       const a0 = Math.random() * Math.PI * 2, d0 = NODE_R * 2 + GAP_BEAT + Math.random() * 110;
       const pts = [[L.x + Math.cos(a0) * d0, L.y + Math.sin(a0) * d0]];
       // 꺾이는 각: 관절 내각 150~170° (= 방향 전환 10~30°), 항상 같은 쪽으로.
@@ -293,12 +340,30 @@ function planRun(L, t) {
   }
   return best || [[80, 640], [218, 640], [356, 640], [470, 640]];
 }
+// 패턴2 쌍의 두 번째 노드: 첫 노드에서 이동 방향 그대로(±25°) 짧게 이어짐
+function pickPairPos(A, head, t) {
+  const step = NODE_R * 2 + GAP_RUN + 2;
+  let best = null, bestC = -Infinity;
+  for (const spread of [25, 60, 180]) {
+    for (let k = 0; k < 250; k++) {
+      const a = head + (Math.random() * 2 - 1) * spread * Math.PI / 180, d = step + Math.random() * 30;
+      const x = A.x + Math.cos(a) * d, y = A.y + Math.sin(a) * d;
+      if (!inField(x, y)) continue;
+      const c = nodeClearance(x, y, GAP_RUN, t);
+      if (c >= 0) return [x, y];
+      if (c > bestC) { bestC = c; best = [x, y]; }
+    }
+  }
+  return best || [clamp(A.x + step, FIELD.x0, FIELD.x1), A.y];
+}
 function spawnNode(t, kind, idx = 0) {
   let x = BOSS_X, y = BOSS_Y;
   const L = S.lastNode || { x: W / 2, y: 640 };
   if (kind === 'beat') [x, y] = pickBeatPos(L, t);
+  else if (kind === 'pair' && idx === 0) { [x, y] = pickBeatPos(L, t); S.pairHead = Math.atan2(y - L.y, x - L.x); }
+  else if (kind === 'pair') [x, y] = pickPairPos(L, S.pairHead ?? 0, t);
   else if (kind === 'run') { if (idx === 0 || !S.runPlan) S.runPlan = planRun(L, t); [x, y] = S.runPlan[idx]; }
-  S.lastNode = { x, y };
+  S.lastNode = { x, y, kind };
   const fin = kind === 'fin';
   S.nodes.push({ x, y, t, fin, kind, r: fin ? FIN_R : NODE_R, lead: fin ? FIN_LEAD : NODE_LEAD, state: 0 });
 }
@@ -308,8 +373,12 @@ function onStep(g) {
   const bar = g >> 4, s = g & 15, info = barInfo(bar), t = g * STEP;
   if (kicksOf(info).includes(s) && !(info.type === 'dodge' && info.last && s >= 12)) S.pulse = 1;
   if (info.type === 'end' && s === 0) { timeUp(t); return; }
-  if (info.type === 'intro' && s === 0) {
+  if (practice && PRACTICE && bar === PRACTICE.to && s === 0) { startRun(PRACTICE.from); return; }   // 연습: 되감기
+  if (info.type === 'intro' && s === 0 && (bar === 0 || bar === info.len - 2)) {
     popText(bar === 0 ? 'READY' : 'DRAG TO DODGE', W / 2, H * 0.45, { size: bar === 0 ? 56 : 34, dur: BAR * 900, chroma: true });
+  }
+  if (isWarn(info) && info.k === 0 && s === 0) {
+    S.warnUntil = t + BAR;   // WARNING 오버레이 1마디
   }
   if (info.type === 'dodge') {
     if (info.k === 0 && s === 0) {
@@ -322,25 +391,31 @@ function onStep(g) {
     }
   }
   if (info.type === 'strike') {
-    if (info.k === 0 && s === 0) drop();
+    if (info.k === 0 && s === 0) drop(info);
+    if (info.last && s === 12 && S.killed) { win(t); return; }   // 안전장치: 처치 후 반격 끝
     if (info.last && s === 12) {
       S.shake = 0.7; S.gauge = 0;
       popText(`${S.cycleDmg} DMG`, W / 2, H * 0.58, { size: 52, col: 'acc', dur: 900, chroma: true });
-      // 회복: 이번 반격 노드를 하나도 안 놓치면(풀콤보) 체력 1칸. 꽉 찼으면 점수 보너스
-      if (!S.strikeMiss && S.strikeHits > 0) {
-        popText('FULL COMBO', W / 2, H * 0.66, { size: 30, col: 'fg', dur: 1000, chroma: true });
+      // 회복 조건 (꽉 찼으면 점수 보너스)
+      //   보통 반격: 노드를 하나도 안 놓침(풀콤보)
+      //   WARNING(SPLIT) 이후 어려운 반격(split·x2·final): 70% 이상 맞히고 FINISH는 반드시
+      const hard = HARD_PATTERNS.includes(info.pattern), total = S.strikeHits + S.strikeMissN;
+      const rate = total ? S.strikeHits / total : 0;
+      const heal = hard ? rate >= 0.7 && S.strikeFin : S.strikeMissN === 0 && S.strikeHits > 0;
+      if (heal) {
+        popText(S.strikeMissN === 0 ? 'FULL COMBO' : `CLEAR ${Math.round(rate * 100)}%`, W / 2, H * 0.66, { size: 30, col: 'fg', dur: 1000, chroma: true });
         if (S.lives < MAX_LIVES) {
           S.lives++; S.healPulse = 1; Sound.sfxHeal();
           popText('+1 HP', S.player.x, S.player.y - 40, { size: 24, col: 'acc', dur: 900, rise: 50 });
         } else S.score += 500;
       }
-      S.strikeMiss = false; S.strikeHits = 0;
+      S.strikeMissN = 0; S.strikeHits = 0; S.strikeFin = false;
       // 다음 반격 준비: 첫 노드는 드롭 박 0.22초 전부터 벨 수 있어서 드롭 시점이 아니라 여기서 초기화
       S.slashN = 0; S.cycleDmg = 0;
     }
   }
 }
-function drop() {
+function drop(info = {}) {
   const T = S.catchT ?? S.displayT;
   for (const h of S.hazards) {
     if (h.k === 'b' && T >= h.t0 && !(h.aim && !h.aimed)) {
@@ -349,7 +424,7 @@ function drop() {
   }
   S.hazards = []; S.catchT = null; S.vphase = 'strike';
   S.flash = 1; S.flashCol = '#ffffff'; S.shake = 1.2;
-  popText('STRIKE!', W / 2, H * 0.45, { size: 72, col: 'acc', dur: 700, chroma: true });
+  popText(info.pattern === 'final' ? 'FINAL STRIKE!' : 'STRIKE!', W / 2, H * 0.45, { size: info.pattern === 'final' ? 60 : 72, col: 'acc', dur: 700, chroma: true });
   if (navigator.vibrate) navigator.vibrate(30);
 }
 
@@ -358,24 +433,36 @@ function songTime() {
   const ac = Sound.ctx;
   return ac.currentTime - S.t0 - (ac.outputLatency || 0) + opts.offset;
 }
+// ===== 연습 모드 (W 키): 첫 SPLIT 구간 2마디 전부터 시작, SPLIT 끝나면 자동으로 되감기 =====
+const SPLIT_BAR = SONG ? (SONG.sections.find(x => x[2] === 'split') || [])[0] : undefined;
+const PRACTICE = SPLIT_BAR !== undefined ? { from: SPLIT_BAR - 2, to: SPLIT_BAR + 4 } : null;
+let practice = false, practiceLoop = 0;
+function togglePractice() {
+  if (!PRACTICE) return;
+  practice = !practice; practiceLoop = 0;
+  if (practice) startRun(PRACTICE.from);
+  else S.texts.push({ text: 'PRACTICE OFF', x: W / 2, y: H * 0.5, born: performance.now(), dur: 900, size: 28, col: 'fg', rise: 0, pop: 1, chroma: true });
+}
+
 let pendingStart = false;
-function startRun() {
+function startRun(fromBar = startBar) {
   Sound.init();
   if (SONG && !Sound.songBuf) {          // 곡 디코딩 대기
-    if (!pendingStart) { pendingStart = true; Sound.loadSong().then(() => { pendingStart = false; startRun(); }); }
+    if (!pendingStart) { pendingStart = true; Sound.loadSong().then(() => { pendingStart = false; startRun(fromBar); }); }
     return;
   }
   Sound.newBus();
   const keepX = S.player.x, keepY = S.player.y;
   S = freshState();
   S.mode = 'play';
-  const off = startBar * BAR, ts = Sound.ctx.currentTime + 0.3;
+  const off = fromBar * BAR, ts = Sound.ctx.currentTime + 0.3;
   S.t0 = ts - off;
-  if (SONG) Sound.playSong(ts, off + SONG.offset, opts.filter ? barInfo(startBar).type : 'strike');
-  S.audioStep = S.gameStep = startBar * 16;
-  S.evStep = startBar * 16 - 1;
-  if (startBar > 0) { S.player.x = keepX; S.player.y = keepY; }
-  if (barInfo(startBar).type === 'strike') S.vphase = 'strike';   // 반격 도중부터 시작한 경우
+  if (SONG) Sound.playSong(ts, off + SONG.offset, opts.filter ? barInfo(fromBar).type : 'strike');
+  S.audioStep = S.gameStep = fromBar * 16;
+  S.evStep = fromBar * 16 - 1;
+  if (fromBar > 0) { S.player.x = keepX; S.player.y = keepY; }
+  if (barInfo(fromBar).type === 'strike') S.vphase = 'strike';   // 반격 도중부터 시작한 경우
+  if (practice) popText(`PRACTICE #${++practiceLoop}`, W / 2, H * 0.36, { size: 30, col: 'acc', dur: 1200, rise: 0, chroma: true });
 }
 function pump() {
   if (S.mode !== 'play' || !Sound.ctx) return;
@@ -392,7 +479,8 @@ setInterval(pump, 20);
 
 // ================= 업데이트 =================
 function update(T, dt) {
-  while ((S.evStep + 1) * STEP <= T) { S.evStep++; onStep(S.evStep); }
+  const run = S;
+  while ((S.evStep + 1) * STEP <= T) { S.evStep++; onStep(S.evStep); if (S !== run) return; }   // 연습 되감기로 판이 바뀌면 중단
   if (T < 0) return;
   const px = S.player.x, py = S.player.y;
   const inCatch = S.catchT !== null && T >= S.catchT;
@@ -442,8 +530,10 @@ function update(T, dt) {
   for (const n of S.nodes) {
     if (n.state) continue;
     if (T > n.t + NODE_LATE) {
-      n.state = 2; S.stats.miss++; S.combo = 0; S.strikeMiss = true;
+      n.state = 2;
+      if (!S.killed) { S.stats.miss++; S.combo = 0; S.strikeMissN++; }   // 처치 후 미스는 기록 안 함
       popText('MISS', n.x, n.y - 40, { size: 20, dur: 500 });
+      if (S.killed && n.fin) { win(T); return; }
       continue;
     }
     if (T >= n.t - NODE_EARLY && speed > 100 && segDist(n.x, n.y, sx, sy, px, py) <= n.r + PLAYER_R) {
@@ -467,6 +557,7 @@ function playerHit(T) {
   burst(S.player.x, S.player.y, 26, '#ff1e56', 420, 4, 0.6);
   Sound.sfxHit();
   if (navigator.vibrate) navigator.vibrate(60);
+  if (practice && S.lives < 1) S.lives = 1;   // 연습 중엔 안 죽음
   if (S.lives <= 0) die(T);
 }
 function timeUp(T) {
@@ -492,10 +583,14 @@ function nodeHit(n, T) {
   if (dt <= JUDGE_PERFECT) { j = 'perfect'; jm = 1; label = 'PERFECT'; }
   else if (dt <= JUDGE_GREAT) { j = 'great'; jm = 0.7; label = 'GREAT'; }
   else { j = 'good'; jm = 0.4; label = 'GOOD'; }
-  S.stats[j]++; S.combo++; S.strikeHits++; S.maxCombo = Math.max(S.maxCombo, S.combo);
+  // 보스 처치(S.killed) 이후 노드는 타격감만: 판정·콤보·점수 기록은 처치 시점에서 고정
+  const counted = !S.killed;
+  if (counted) { S.stats[j]++; S.combo++; S.strikeHits++; if (n.fin) S.strikeFin = true; S.timingSum += T - n.t; S.timingN++; }
+  S.maxCombo = Math.max(S.maxCombo, S.combo);
   const mult = 1 + S.gauge / 50;
   const dmg = Math.round((n.fin ? 40 : 10) * jm * mult * (1 + Math.min(S.combo, 20) * 0.02));
-  S.bossHp = Math.max(0, S.bossHp - dmg); S.cycleDmg += dmg; S.score += dmg * 10; S.bossFlash = 0.15;
+  if (counted) { S.bossHp = Math.max(0, S.bossHp - dmg); S.cycleDmg += dmg; S.score += dmg * 10; }
+  S.bossFlash = 0.15;
   n.state = 1;
   const ang = Math.atan2(S.player.y - S.prevY, S.player.x - S.prevX);
   slashFx(n, ang);
@@ -505,10 +600,20 @@ function nodeHit(n, T) {
     S.flash = 0.6; S.flashCol = '#ff1e56';
   }
   popText(label, n.x, n.y - 50, { size: n.fin ? 44 : 26, col: j === 'perfect' ? 'acc' : 'fg', dur: 500 });
-  popText(String(dmg), n.x + 34, n.y - 8, { size: 18, dur: 600, rise: 60 });
-  Sound.sfxSlash(j, D5 * semi(SLASH_SCALE[Math.min(S.slashN++, SLASH_SCALE.length - 1)] - 12), n.fin);
+  if (counted) popText(String(dmg), n.x + 34, n.y - 8, { size: 18, dur: 600, rise: 60 });
+  const semis = SLASH_SCALE[S.slashN % SLASH_SCALE.length];   // 길면 음계 순환
+  S.slashN++;
+  Sound.sfxSlash(j, D5 * semi(semis - 12), n.fin);
   if (navigator.vibrate) navigator.vibrate(n.fin ? 40 : 15);
-  if (S.bossHp <= 0) win(T);
+  if (counted && S.bossHp <= 0) bossKilled(T);
+  if (S.killed && n.fin) win(T);   // 처치 후엔 FINISH까지 베고 끝
+}
+// 보스 HP 0: 바로 끝내지 않고 이번 반격의 FINISH까지 계속 (기록은 여기서 고정)
+function bossKilled(T) {
+  S.killed = true; S.clearT = T;
+  S.shake = Math.max(S.shake, 1.2); S.flash = 0.5; S.flashCol = '#ffffff';
+  popText('BREAK!', W / 2, H * 0.3, { size: 64, col: 'acc', dur: 900, chroma: true });
+  Sound.sfxStamp(true);
 }
 function win(T) {
   for (const h of S.hazards) {
@@ -691,7 +796,8 @@ function drawBoss(pal, T) {
   const p = S.pulse, sc = 1 + p * 0.12, hpP = S.bossHp / BOSS_HP;
   const rot = T * (0.8 + (1 - hpP) * 1.5);
   ctx.save(); ctx.translate(BOSS_X, BOSS_Y); ctx.scale(sc, sc);
-  if (hpP < 0.4) ctx.translate((Math.random() - 0.5) * 4, (Math.random() - 0.5) * 4);
+  if (S.killed) { ctx.translate((Math.random() - 0.5) * 12, (Math.random() - 0.5) * 12); ctx.globalAlpha = Math.random() < 0.3 ? 0.35 : 1; }
+  else if (hpP < 0.4) ctx.translate((Math.random() - 0.5) * 4, (Math.random() - 0.5) * 4);
   const col = S.bossFlash > 0 ? pal.acc : pal.fg;
   ctx.strokeStyle = col; ctx.lineWidth = 4; poly(0, 0, 70, 6, rot); ctx.stroke();
   ctx.lineWidth = 2; ctx.globalAlpha = 0.5; poly(0, 0, 84, 6, -rot * 0.5); ctx.stroke(); ctx.globalAlpha = 1;
@@ -707,9 +813,30 @@ const NODE_ALPHA = [1, 0.5, 0.2];
 function drawNodes(pal, T) {
   const vis = S.nodes.filter(n => !n.state && T >= n.t - n.lead).sort((a, b) => a.t - b.t);
   const beatK = 1 - (T % BEAT) / BEAT;
+  // FINISH로 가는 화살표: 굵은 실선 + 박마다 맥동 + 큰 화살촉 (연타 끝에 FINISH 놓치지 않게).
+  // 순서상 몇 번째든 FINISH가 보이면 항상 그림
+  const fi = vis.findIndex(n => n.fin);
+  if (fi >= 1) {
+    const a = vis[fi - 1], b = vis[fi];
+    const dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy);
+    if (d > a.r + b.r + 8) {
+      const ux = dx / d, uy = dy / d, near = fi === 1;
+      const sx = a.x + ux * (a.r + 6), sy = a.y + uy * (a.r + 6), ex = b.x - ux * (b.r + 10), ey = b.y - uy * (b.r + 10);
+      ctx.strokeStyle = pal.acc; ctx.fillStyle = pal.acc; ctx.lineCap = 'round';
+      ctx.globalAlpha = (near ? 0.75 : 0.35) + beatK * 0.25;
+      ctx.lineWidth = near ? 8 + beatK * 4 : 5;
+      ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(ex - ux * 18, ey - uy * 18); ctx.stroke();
+      const hs = near ? 30 + beatK * 8 : 22;
+      ctx.beginPath(); ctx.moveTo(ex, ey);
+      ctx.lineTo(ex - ux * hs - uy * hs * 0.6, ey - uy * hs + ux * hs * 0.6); ctx.lineTo(ex - ux * hs + uy * hs * 0.6, ey - uy * hs - ux * hs * 0.6);
+      ctx.closePath(); ctx.fill();
+      ctx.lineCap = 'butt'; ctx.globalAlpha = 1;
+    }
+  }
   // 경로 화살표 (뒤에서부터 그려서 다음 노드 화살표가 위로)
   for (let i = Math.min(vis.length - 1, 2); i >= 1; i--) {
     const a = vis[i - 1], b = vis[i];
+    if (b.fin) continue;   // FINISH 화살표는 위에서 따로
     const dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy);
     if (d < a.r + b.r + 8) continue;
     const ux = dx / d, uy = dy / d;
@@ -828,6 +955,24 @@ function drawTexts(pal, now) {
   }
 }
 
+// WARNING: 배경 전체를 은은하게 — 붉은 기운이 박마다 맥동 + 아주 옅은 사선 줄무늬 + 배경에 큰 글자.
+// 월드 레이어 맨 뒤(격자 위, 장애물·노드·플레이어 아래)에 그려서 아무것도 가리지 않음.
+function drawWarning(T) {
+  if (!S.warnUntil || T >= S.warnUntil || T < S.warnUntil - BAR) return;
+  const beatK = 1 - (T % BEAT) / BEAT, fade = Math.min(1, (S.warnUntil - T) / (BEAT * 0.5));
+  ctx.save();
+  ctx.globalAlpha = (0.05 + beatK * 0.07) * fade;
+  ctx.fillStyle = '#ff1e56'; ctx.fillRect(0, 0, W, H);
+  ctx.globalAlpha = 0.05 * fade; ctx.fillStyle = '#ff1e56';
+  const off = (T * 60) % 80;
+  for (let x = -H; x < W + 80; x += 80) {
+    ctx.beginPath(); ctx.moveTo(x + off, 0); ctx.lineTo(x + off + 34, 0); ctx.lineTo(x + off + 34 + H * 0.6, H); ctx.lineTo(x + off + H * 0.6, H); ctx.fill();
+  }
+  ctx.translate(W / 2, H * 0.5); ctx.rotate(-Math.PI / 2);
+  text('WARNING', 0, 0, 150, '#ff1e56', { alpha: (0.06 + beatK * 0.06) * fade });
+  ctx.restore();
+}
+
 function drawCatch(pal, cp, now) {
   ctx.fillStyle = S.vphase === 'strike' ? 'rgba(255,255,255,1)' : 'rgba(0,0,0,1)';
   ctx.globalAlpha = 0.35 * cp; ctx.fillRect(0, 0, W, H);
@@ -871,8 +1016,68 @@ function drawHUD(pal, T) {
   text('GRAZE', gx, gy - 12, 11, pal.fg, { align: 'left', alpha: 0.6 });
   text(`x${(1 + S.gauge / 50).toFixed(1)}`, gx + gw + 12, gy + 4, 16, pal.acc, { align: 'left' });
   if (S.combo > 1) text(`${S.combo} COMBO`, W - 30, H - 78, 16, pal.fg, { align: 'right' });
-  const flags = [opts.god && 'GOD', SONG && !opts.filter && 'FILTER OFF', opts.offset && `SYNC ${Math.round(opts.offset * 1000)}ms`].filter(Boolean).join('  ');
+  const flags = [practice && 'PRACTICE (W)', opts.god && 'GOD', SONG && !opts.filter && 'FILTER OFF', opts.offset && `SYNC ${Math.round(opts.offset * 1000)}ms`].filter(Boolean).join('  ');
   if (flags) text(flags, 30, 110, 12, pal.acc, { align: 'left' });
+}
+
+// ================= 설정 화면 =================
+let settingsOpen = false;
+const SET_Y0 = 210, SET_DY = 80;
+const SETTINGS = [
+  { label: '전체 볼륨', get: () => `${opts.vol * 10}%`,
+    step: d => { opts.vol = clamp(opts.vol + d, 0, 10); applyVolume(); preview(Sound.SLAMS[opts.slam]); } },
+  { label: '음악 볼륨', get: () => `${opts.mvol * 10}%`, step: d => { opts.mvol = clamp(opts.mvol + d, 0, 10); applyVolume(); } },
+  { label: '이동 감도', get: () => `${opts.sens + 1}`, step: d => { opts.sens = clamp(opts.sens + d, 0, SENS_LEVELS.length - 1); } },
+  { label: '가속', get: () => ACCEL_LEVELS[opts.accel][1], step: d => { opts.accel = clamp(opts.accel + d, 0, ACCEL_LEVELS.length - 1); } },
+  { label: '레이저 소리', get: () => Sound.LASERS[opts.laser].name,
+    step: d => { opts.laser = (opts.laser + d + Sound.LASERS.length) % Sound.LASERS.length; preview(Sound.LASERS[opts.laser]); } },
+  { label: '슬램 소리', get: () => Sound.SLAMS[opts.slam].name,
+    step: d => { opts.slam = (opts.slam + d + Sound.SLAMS.length) % Sound.SLAMS.length; preview(Sound.SLAMS[opts.slam]); } },
+  { label: 'DJ 필터', get: () => opts.filter ? 'ON' : 'OFF', step: () => { opts.filter = !opts.filter; } },
+  { label: '싱크 보정', get: () => `${Math.round(opts.offset * 1000)}ms`,
+    step: d => { opts.offset = Math.round((opts.offset + d * 0.01) * 100) / 100; } },
+];
+function preview(snd) { Sound.init(); Sound.ensureBus(); snd.play(Sound.ctx.currentTime + 0.03, 0); }
+const GEAR = { x: W - 48, y: 52, r: 30 };
+
+function drawGear(pal) {
+  const { x, y } = GEAR;
+  ctx.strokeStyle = pal.fg; ctx.globalAlpha = 0.75; ctx.lineWidth = 4;
+  ctx.beginPath(); ctx.arc(x, y, 9, 0, Math.PI * 2); ctx.stroke();
+  for (let i = 0; i < 8; i++) {
+    const a = i / 8 * Math.PI * 2;
+    ctx.beginPath(); ctx.moveTo(x + Math.cos(a) * 14, y + Math.sin(a) * 14); ctx.lineTo(x + Math.cos(a) * 20, y + Math.sin(a) * 20); ctx.stroke();
+  }
+  ctx.beginPath(); ctx.arc(x, y, 15, 0, Math.PI * 2); ctx.stroke();
+  ctx.globalAlpha = 1;
+}
+function arrow(x, y, dir, pal) {
+  ctx.fillStyle = pal.acc;
+  ctx.beginPath(); ctx.moveTo(x + dir * 10, y); ctx.lineTo(x - dir * 8, y - 12); ctx.lineTo(x - dir * 8, y + 12); ctx.closePath(); ctx.fill();
+}
+function drawSettings(pal) {
+  ctx.fillStyle = 'rgba(7,7,12,0.97)'; ctx.fillRect(0, 0, W, H);
+  chromaText('SETTINGS', W / 2, 120, 44, pal);
+  const ko = { font: FONT_KO, weight: 700 };
+  SETTINGS.forEach((it, i) => {
+    const y = SET_Y0 + i * SET_DY;
+    ctx.fillStyle = 'rgba(255,255,255,0.05)'; ctx.fillRect(30, y - 31, W - 60, 62);
+    text(it.label, 52, y, 20, pal.fg, { ...ko, align: 'left' });
+    arrow(262, y, -1, pal); arrow(498, y, 1, pal);
+    text(it.get(), 380, y, it.get().length > 8 ? 17 : 22, pal.fg);
+  });
+  const by = SET_Y0 + SETTINGS.length * SET_DY + 40;
+  ctx.strokeStyle = pal.acc; ctx.lineWidth = 3; ctx.strokeRect(W / 2 - 100, by - 28, 200, 56);
+  text('BACK', W / 2, by + 1, 24, pal.acc);
+}
+// 설정 화면 터치: 행의 왼쪽 절반(값 영역 기준) = 이전, 오른쪽 = 다음
+function settingsTap(x, y) {
+  const by = SET_Y0 + SETTINGS.length * SET_DY + 40;
+  if (Math.abs(y - by) < 34 && Math.abs(x - W / 2) < 110) { settingsOpen = false; saveOpts(); return; }
+  const i = Math.round((y - SET_Y0) / SET_DY);
+  if (i < 0 || i >= SETTINGS.length || Math.abs(y - (SET_Y0 + i * SET_DY)) > 34 || x < 230) return;
+  SETTINGS[i].step(x < 380 ? -1 : 1);
+  saveOpts();
 }
 
 function drawTitle(pal, now) {
@@ -885,6 +1090,8 @@ function drawTitle(pal, now) {
   if (best) text(`BEST ${best.toLocaleString()}`, W / 2, 516, 15, pal.fg, { alpha: 0.55 });
   const bp = (t % BEAT) / BEAT;
   text(pendingStart ? 'LOADING' : 'TAP TO START', W / 2, 760, 24, pal.acc, { alpha: 1 - bp * 0.7 });
+  drawGear(pal);
+  if (settingsOpen) drawSettings(pal);
 }
 
 function rank() {
@@ -911,6 +1118,13 @@ function statCol(label, value, x, y, pal, a, col) {
   text(value, x, y + 26, 26, col || pal.fg, { alpha: a });
 }
 
+// 평균 타이밍 (+ 늦음 / - 빠름). 한쪽으로 쏠려 있으면 설정의 싱크 보정으로 맞추면 됨
+function drawTiming(x, y, pal, a) {
+  if (!S.timingN) return;
+  const ms = Math.round(S.timingSum / S.timingN * 1000);
+  const tag = Math.abs(ms) < 15 ? 'ON BEAT' : ms > 0 ? 'LATE' : 'EARLY';
+  text(`AVG TIMING ${ms > 0 ? '+' : ''}${ms}ms  ${tag}`, x, y, 13, Math.abs(ms) < 15 ? pal.fg : pal.acc, { alpha: a * 0.8 });
+}
 function drawEnd(pal, now) {
   const e = (now - S.endReal) / 1000;
   ctx.globalAlpha = ease((e - 0.15) / 0.5);
@@ -946,6 +1160,7 @@ function drawDeadScreen(pal, e) {
   text(Math.round(S.score * a).toLocaleString(), W / 2, H * 0.585, 46, pal.fg, { alpha: a });
   if (S.newBest) text('NEW BEST', W / 2, H * 0.64, 16, pal.acc, { alpha: a });
   else if (S.best > 0) text(`BEST ${S.best.toLocaleString()}`, W / 2, H * 0.64, 14, pal.fg, { alpha: a * 0.55 });
+  drawTiming(W / 2, H * 0.69, pal, a);
 }
 
 function drawWinScreen(pal, e) {
@@ -976,13 +1191,14 @@ function drawWinScreen(pal, e) {
     statCol(l, String(v), cx + cw * (i + 0.5) / 4, cy + 140, pal, ease((e - t0) / 0.2), c);
   });
   // 기타 3칸
-  const extras = [['GRAZE', String(s.graze)], ['MAX COMBO', String(S.maxCombo)], ['TIME', S.endT.toFixed(1) + 's']];
+  const extras = [['GRAZE', String(s.graze)], ['MAX COMBO', String(S.maxCombo)], ['TIME', (S.clearT ?? S.endT).toFixed(1) + 's']];
   extras.forEach(([l, v], i) => {
     const t0 = 1.75 + i * 0.08;
     if (e < t0) return;
     once('x' + i, () => Sound.sfxTick(1.8 + i * 0.1));
     statCol(l, v, cx + cw * (i + 0.5) / 3, cy + 230, pal, ease((e - t0) / 0.2));
   });
+  if (e >= 1.95) drawTiming(W / 2, cy + ch - 20, pal, ease((e - 1.95) / 0.2));
   // 랭크 도장
   const rk = (e - 2.25) / 0.13;
   if (rk > 0) {
@@ -1013,6 +1229,7 @@ function draw(T, now) {
   ctx.translate(W / 2 + (Math.random() * 2 - 1) * sh, H / 2 + (Math.random() * 2 - 1) * sh);
   ctx.scale(zoom, zoom); ctx.translate(-W / 2, -H / 2);
   drawGrid(pal, T);
+  drawWarning(T);
   drawProgress(pal, T);
   drawAreaHazards(pal, ht);
   drawBoss(pal, T);
@@ -1044,8 +1261,10 @@ function frame(now) {
   const dt = Math.min(0.05, (now - lastNow) / 1000); lastNow = now;
   let T = S.endT;
   if (S.mode === 'play' && !S.paused) {
+    const run = S;
     pump(); T = songTime(); update(T, dt);
-    if (S.mode !== 'play') T = S.endT;
+    if (S !== run) T = songTime();   // 연습 되감기로 새 판
+    else if (S.mode !== 'play') T = S.endT;
   } else if (S.mode === 'play') T = S.displayT;
   const frozen = now < S.hitstopUntil;
   if (!frozen) { S.displayT = T; updateFx(dt); }
@@ -1064,7 +1283,7 @@ function frame(now) {
 requestAnimationFrame(frame);
 
 // ================= 입력: 상대 드래그 =================
-let dragging = false, lx = 0, ly = 0;
+let dragging = false, lx = 0, ly = 0, lt = 0;
 function setPaused(v) {
   if (S.mode !== 'play' || !Sound.ctx) return;
   S.paused = v;
@@ -1074,26 +1293,34 @@ canvas.addEventListener('pointerdown', e => {
   e.preventDefault();
   Sound.init();
   const now = performance.now();
+  const r = canvas.getBoundingClientRect(), tx = (e.clientX - r.left) / scale, ty = (e.clientY - r.top) / scale;
   if (S.paused) setPaused(false);
-  else if (S.mode === 'title') startRun();
+  else if (S.mode === 'title') {
+    if (settingsOpen) { settingsTap(tx, ty); return; }
+    if (Math.hypot(tx - GEAR.x, ty - GEAR.y) < GEAR.r + 14) { settingsOpen = true; return; }
+    startRun();
+  }
   else if (S.mode === 'dead' || S.mode === 'win') {
     const e = (now - S.endReal) / 1000, rt = revealTime();
     if (e < 0.3) { /* 오입력 방지 */ }
     else if (e < rt) S.endReal = now - rt * 1000;   // 연출 스킵
     else startRun();
   }
-  dragging = true; lx = e.clientX; ly = e.clientY;
+  dragging = true; lx = e.clientX; ly = e.clientY; lt = e.timeStamp;
   try { canvas.setPointerCapture(e.pointerId); } catch (_) {}
 });
 canvas.addEventListener('pointermove', e => {
   if (!dragging) return;
-  const k = SENS / scale;
+  const dx = e.clientX - lx, dy = e.clientY - ly, dt = Math.max(1, e.timeStamp - lt);
+  const base = SENS_LEVELS[opts.sens], acc = ACCEL_LEVELS[opts.accel][0];
+  const gain = clamp(base + Math.hypot(dx, dy) / dt * acc, base, acc ? base * 1.75 : base);
+  const k = gain / scale;
   if (S.mode === 'play' && !S.paused) {
     const p = S.player;
-    p.x = clamp(p.x + (e.clientX - lx) * k, 12, W - 12);
-    p.y = clamp(p.y + (e.clientY - ly) * k, 12, H - 12);
+    p.x = clamp(p.x + dx * k, 12, W - 12);
+    p.y = clamp(p.y + dy * k, 12, H - 12);
   }
-  lx = e.clientX; ly = e.clientY;
+  lx = e.clientX; ly = e.clientY; lt = e.timeStamp;
 });
 const endDrag = () => { dragging = false; };
 canvas.addEventListener('pointerup', endDrag);
@@ -1105,13 +1332,14 @@ addEventListener('keydown', e => {
   if (k === 'g') opts.god = !opts.god;
   if (k === 'h') opts.hitbox = !opts.hitbox;
   if (k === 'f') {
-    opts.filter = !opts.filter; localStorage.setItem('cb_filter', opts.filter ? '1' : '0');
+    opts.filter = !opts.filter; saveOpts();
     if (!opts.filter && S.mode === 'play' && Sound.ctx) Sound.songOpen(Sound.ctx.currentTime);
   }
   if (k === 'p' || k === 'escape') setPaused(!S.paused);
-  if (k === 'r') { Sound.init(); startRun(); }
+  if (k === 'r') { Sound.init(); startRun(practice && PRACTICE ? PRACTICE.from : startBar); }
+  if (k === 'w') { Sound.init(); togglePractice(); }
   if (e.key === '[' || e.key === ']') {
     opts.offset = Math.round((opts.offset + (e.key === ']' ? 0.01 : -0.01)) * 100) / 100;
-    localStorage.setItem('cb_offset', opts.offset);
+    saveOpts();
   }
 });

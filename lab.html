@@ -29,7 +29,7 @@
 <body>
 <main>
   <h1>SOUND <span>LAB</span></h1>
-  <p class="sub">장애물 소리 후보 미리듣기. 빨간 표시 = 게임에서 사용 중 (game.js의 LASER_SFX / SLAM_SFX).</p>
+  <p class="sub">장애물 소리 후보 미리듣기. 빨간 표시 = 기본값. 실제 선택은 게임 타이틀의 설정(톱니바퀴)에서.</p>
 
   <h2>LASER</h2>
   <div id="lasers"></div>
@@ -55,7 +55,7 @@
     hits.forEach(b => play(t0 + b * BEAT));
   }
 
-  const IN_USE = { laser: 1, slam: 4 };   // game.js LASER_SFX / SLAM_SFX 와 같게
+  const IN_USE = { laser: 1, slam: 4 };   // game.js 기본값 (opts.laser / opts.slam)
   function build(id, list, key, hits) {
     const box = document.getElementById(id);
     const render = () => {

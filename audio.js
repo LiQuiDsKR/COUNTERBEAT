@@ -3,6 +3,7 @@
 const Sound = (() => {
   let ac = null, comp, sfxOut, noiseBuf, hard, soft, bus = null, lastGraze = 0;
   let songBytes = null, songPromise = null, songBuf = null, songSrc = null, songGain = null, songLP = null;
+  let master = null, songVol = null, volAll = 0.7, volMusic = 1;   // 볼륨 (설정 화면)
 
   // ---- 곡(mp3) ----
   function preloadSong(url) { songBytes = fetch(url).then(r => r.arrayBuffer()); }
@@ -17,7 +18,8 @@ const Sound = (() => {
   const CATCH_LP = 520, CATCH_GAIN = 0.6;    // 캐치 박에 빨아들이는 정도 (이전 140Hz / 0.12 → 너무 사라짐)
   function playSong(when, offset, phase) {
     stopSong();
-    songGain = ac.createGain(); songGain.connect(bus);
+    songVol = ac.createGain(); songVol.gain.value = volMusic; songVol.connect(bus);
+    songGain = ac.createGain(); songGain.connect(songVol);
     songLP = ac.createBiquadFilter(); songLP.type = 'lowpass'; songLP.Q.value = 0.9;
     songLP.connect(songGain);
     const open = phase === 'strike';
@@ -69,7 +71,7 @@ const Sound = (() => {
     comp = ac.createDynamicsCompressor();
     comp.threshold.value = -12; comp.knee.value = 6; comp.ratio.value = 4;
     comp.attack.value = 0.003; comp.release.value = 0.12;
-    const master = ac.createGain(); master.gain.value = 0.9;
+    master = ac.createGain(); master.gain.value = 0.9 * volAll;
     comp.connect(master); master.connect(ac.destination);
     sfxOut = ac.createGain(); sfxOut.gain.value = 0.7; sfxOut.connect(comp);
     noiseBuf = ac.createBuffer(1, ac.sampleRate * 2, ac.sampleRate);
@@ -90,6 +92,13 @@ const Sound = (() => {
     }
     bus = ac.createGain(); bus.gain.value = 1; bus.connect(comp);
   }
+  // all: 전체 0~1, music: Suno 곡 0~1
+  function setVolume(all, music) {
+    volAll = all; volMusic = music;
+    if (master) master.gain.setTargetAtTime(0.9 * all, ac.currentTime, 0.02);
+    if (songVol) songVol.gain.setTargetAtTime(music, ac.currentTime, 0.02);
+  }
+  function ensureBus() { if (!bus) newBus(); }   // 설정 화면 미리듣기용
   function fadeOut(sec) {
     if (!bus) return;
     const t = ac.currentTime, g = bus.gain;
@@ -212,7 +221,7 @@ const Sound = (() => {
       sh.connect(lp).connect(g).connect(o);
       nz(t, 0.15, 'highpass', 2200, 0, 0.18, 0.08, o);
     } },
-    { name: 'Railgun', desc: '날카로운 크랙 + 서브 드롭 (사용 중)', play(t, p) {
+    { name: 'Railgun', desc: '날카로운 크랙 + 서브 드롭 (기본)', play(t, p) {
       const o = outP(p);
       nz(t, 0.08, 'bandpass', 3500, 0.8, 0.55, 0.035, o);
       const s = osc('sine', 150, t, 0.4), g = ac.createGain();
@@ -260,7 +269,7 @@ const Sound = (() => {
       s.frequency.exponentialRampToValueAtTime(28, t + 1.0); sh.curve = soft;
       env(g, t, 0.003, 0.9, 1.1); s.connect(sh).connect(g).connect(o);
     } },
-    { name: 'Glitch Crush', desc: '끊기는 디지털 파쇄음 (사용 중)', play(t, p) {
+    { name: 'Glitch Crush', desc: '끊기는 디지털 파쇄음 (기본)', play(t, p) {
       const o = outP(p); kick(t, true, o);
       for (let i = 0; i < 4; i++) {
         const tt = t + i * 0.045, sh = ac.createWaveShaper(), g = ac.createGain(); sh.curve = hard;
@@ -275,6 +284,14 @@ const Sound = (() => {
     } },
   ];
 
+  // WARNING 경보음 (박마다): 두 음 사이렌
+  function alarm(t, first, out = bus) {
+    const o = osc('square', 880, t, 0.36), lp = ac.createBiquadFilter(), g = ac.createGain();
+    o.frequency.setValueAtTime(880, t); o.frequency.setValueAtTime(660, t + 0.16);
+    lp.type = 'lowpass'; lp.frequency.value = 2600;
+    env(g, t, 0.004, first ? 0.16 : 0.11, 0.3);
+    o.connect(lp).connect(g).connect(out);
+  }
   // 체력 회복: 짧게 올라가는 차임
   function sfxHeal() {
     const t = ac.currentTime;
@@ -313,8 +330,8 @@ const Sound = (() => {
   function sfxBoom() { const t = ac.currentTime; kick(t, true, sfxOut); crash(t, 0.4, sfxOut); roar(t, sfxOut); }
 
   return {
-    init, newBus, fadeOut, kick, bass, clap, hat, bell, crash, riser, roar,
-    sfxSlash, sfxGraze, sfxHeal, sfxHit, sfxBoom, sfxTick, sfxStamp,
+    init, newBus, ensureBus, setVolume, fadeOut, kick, bass, clap, hat, bell, crash, riser, roar,
+    sfxSlash, sfxGraze, sfxHeal, sfxHit, alarm, sfxBoom, sfxTick, sfxStamp,
     preloadSong, loadSong, playSong, stopSong, songDodge, songCatch, songStrike, songOpen,
     LASERS, SLAMS,
     get ctx() { return ac; },
