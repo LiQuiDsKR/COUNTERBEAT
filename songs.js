@@ -67,3 +67,15 @@ const STAGES = [
   { id: 3, locked: true, color: '#b06bff' },
   { id: 4, locked: true, color: '#ffd23f' },
 ];
+
+// 로비·설정·스테이지 선택 BGM. 처음엔 인트로부터, 그 뒤로 loopStart~loopEnd 무한 반복.
+// 분석: 75 BPM (한 마디 3.2초), 0~13초 인트로, 4마디(13.1초)부터 그루브.
+// 루프 = 4~27마디(24마디, 76.8초). 27마디의 짧은 쉼 뒤 4마디로 돌아가서 프레이즈가 자연스럽게 이어짐.
+// 이음새는 킥 직전 조용한 순간(마디선 -0.15초)에 두고 40ms 크로스페이드를 미리 입힘 (audio.js bakeLoop).
+const MENU_MUSIC = {
+  file: 'music/0.%20Lobby.mp3',
+  loopStart: 12.934,
+  loopEnd: 89.734,   // = loopStart + 24마디 × 3.2초
+  level: 0.8,        // 게임 곡보다 살짝 작게
+};
+

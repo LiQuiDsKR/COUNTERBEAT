@@ -110,6 +110,7 @@ if (localStorage.getItem('cb_best') !== null && localStorage.getItem('cb_best_1'
 const stageBest = st => +(localStorage.getItem('cb_best_' + st.id) || 0);
 const stageRank = st => localStorage.getItem('cb_rank_' + st.id) || '';
 setStage(STAGES[0]);
+Sound.preloadMenu(MENU_MUSIC);   // 로비 BGM 미리 받기 (재생은 첫 터치 후: 브라우저 자동재생 제한)
 
 function freshState() {
   return {
@@ -457,6 +458,7 @@ function restartRun() { startRun(0); }
 function goToSelect() {
   if (Sound.ctx) { Sound.stopSong(); Sound.newBus(); if (Sound.ctx.state === 'suspended') Sound.ctx.resume(); }
   S = freshState(); ui.screen = 'select';
+  Sound.playMenu(false);   // 로비 BGM 다시 (루프 구간부터 페이드인)
 }
 let pendingStart = false;
 function startRun(fromBar = 0) {
@@ -465,6 +467,7 @@ function startRun(fromBar = 0) {
     if (!pendingStart) { pendingStart = true; Sound.loadSong().then(() => { pendingStart = false; startRun(fromBar); }); }
     return;
   }
+  Sound.stopMenu(0.6);   // 로비 BGM 페이드아웃 → 스테이지 곡
   Sound.newBus();
   const keepX = S.player.x, keepY = S.player.y;
   S = freshState();
@@ -1260,7 +1263,7 @@ canvas.addEventListener('pointerdown', e => {
   downX = tx; downY = ty; downAt = now;
   dragging = true; lx = e.clientX; ly = e.clientY; lt = e.timeStamp;
   try { canvas.setPointerCapture(e.pointerId); } catch (_) {}
-  if (S.mode === 'title') { uiDown(tx, ty); return; }
+  if (S.mode === 'title') { Sound.playMenu(true); uiDown(tx, ty); return; }   // 첫 터치에 로비 BGM 시작 (이미 나오면 그대로)
   // 게임 중 일시정지 버튼은 누르는 즉시
   if (S.mode === 'play' && !S.paused && hitAt(tx, ty)) { tapAt(tx, ty); dragging = false; return; }
   if (S.mode === 'dead' || S.mode === 'win') {
@@ -1293,7 +1296,10 @@ canvas.addEventListener('pointermove', e => {
 const endDrag = () => { dragging = false; };
 canvas.addEventListener('pointerup', endDrag);   // 위의 탭 처리 다음에 실행
 canvas.addEventListener('pointercancel', e => { if (S.mode === 'title' && dragging) uiUp(...toLogical(e), false); endDrag(); });
-document.addEventListener('visibilitychange', () => { if (document.hidden) setPaused(true); });
+document.addEventListener('visibilitychange', () => {
+  if (S.mode === 'title' && Sound.ctx) { document.hidden ? Sound.ctx.suspend() : Sound.ctx.resume(); return; }   // 메뉴: 앱 나가면 BGM 멈춤
+  if (document.hidden) setPaused(true);
+});
 
 // 키보드는 ESC 하나 (PC용): 게임 중 = 일시정지/이어하기, 메뉴 = 뒤로
 addEventListener('keydown', e => {

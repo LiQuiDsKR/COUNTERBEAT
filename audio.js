@@ -19,6 +19,49 @@ const Sound = (() => {
     return e.dec;
   }
   const curBuf = () => (songs[curUrl] && songs[curUrl].buf) || null;
+  // ---- 메뉴 BGM (로비·설정·스테이지 선택): 판마다 바뀌는 bus 와 별개로 계속 흐름 ----
+  const menu = { cfg: null, bytes: null, dec: null, buf: null, src: null, gain: null, want: false };
+  function preloadMenu(cfg) { menu.cfg = cfg; menu.bytes = fetch(cfg.file).then(r => r.arrayBuffer()); }
+  function loadMenu() {
+    if (!menu.dec) menu.dec = menu.bytes.then(ab => ac.decodeAudioData(ab)).then(b => (menu.buf = bakeLoop(b, menu.cfg.loopStart, menu.cfg.loopEnd, 0.04)));
+    return menu.dec;
+  }
+  // 루프 끝 xf초를 '루프 시작 직전 소리'로 크로스페이드 → 끝에서 시작으로 넘어갈 때 이어져 들림 (틱 소리 없음)
+  function bakeLoop(b, ls, le, xf) {
+    const sr = b.sampleRate, end = Math.round(le * sr), st = Math.round(ls * sr), n = Math.round(xf * sr);
+    const out = ac.createBuffer(b.numberOfChannels, end, sr);
+    for (let ch = 0; ch < b.numberOfChannels; ch++) {
+      const src = b.getChannelData(ch), dst = out.getChannelData(ch);
+      dst.set(src.subarray(0, end));
+      for (let i = 0; i < n; i++) {
+        const w = i / n;
+        dst[end - n + i] = src[end - n + i] * (1 - w) + src[st - n + i] * w;
+      }
+    }
+    return out;
+  }
+  const menuLevel = () => (menu.cfg ? menu.cfg.level : 1) * volMusic;
+  // fromStart: 인트로부터 (첫 실행). 아니면 루프 시작점부터. 이미 나오고 있으면 그대로
+  function playMenu(fromStart) {
+    if (!ac || !menu.cfg) return;
+    menu.want = true;
+    // 디코딩 끝나기 전에 게임을 시작했으면(want=false) 재생 안 함
+    if (!menu.buf) { loadMenu().then(() => { if (menu.want) playMenu(fromStart); }); return; }
+    const t = ac.currentTime;
+    if (menu.src) { menu.gain.gain.cancelScheduledValues(t); menu.gain.gain.setTargetAtTime(menuLevel(), t, 0.2); return; }
+    menu.gain = ac.createGain(); menu.gain.connect(comp);
+    menu.gain.gain.setValueAtTime(0.0001, t); menu.gain.gain.linearRampToValueAtTime(menuLevel(), t + (fromStart ? 0.3 : 1.2));
+    menu.src = ac.createBufferSource(); menu.src.buffer = menu.buf;
+    menu.src.loop = true; menu.src.loopStart = menu.cfg.loopStart; menu.src.loopEnd = menu.cfg.loopEnd;
+    menu.src.connect(menu.gain); menu.src.start(t, fromStart ? 0 : menu.cfg.loopStart);
+  }
+  function stopMenu(fade = 0.6) {
+    menu.want = false;
+    if (!menu.src) return;
+    const t = ac.currentTime, g = menu.gain.gain, src = menu.src;
+    g.cancelScheduledValues(t); g.setValueAtTime(g.value, t); g.linearRampToValueAtTime(0.0001, t + fade);
+    src.stop(t + fade + 0.05); menu.src = null;
+  }
   function stopSong() { if (songSrc) { try { songSrc.stop(); } catch (_) {} songSrc = null; } }
   // when: ctx 시간, offset: 파일 내 위치(초)
   // 곡 → 로우패스(DJ 필터) → 게인 → 버스
@@ -105,6 +148,7 @@ const Sound = (() => {
     volAll = all; volMusic = music;
     if (master) master.gain.setTargetAtTime(0.9 * all, ac.currentTime, 0.02);
     if (songVol) songVol.gain.setTargetAtTime(music, ac.currentTime, 0.02);
+    if (menu.src) menu.gain.gain.setTargetAtTime(menuLevel(), ac.currentTime, 0.02);
   }
   function ensureBus() { if (!bus) newBus(); }   // 설정 화면 미리듣기용
   function fadeOut(sec) {
@@ -340,9 +384,11 @@ const Sound = (() => {
   return {
     init, newBus, ensureBus, setVolume, fadeOut, kick, bass, clap, hat, bell, crash, riser, roar,
     sfxSlash, sfxGraze, sfxHeal, sfxHit, alarm, sfxBoom, sfxTick, sfxStamp,
-    preloadSong, loadSong, playSong, stopSong, songDodge, songCatch, songStrike, songOpen,
+    preloadSong, loadSong, playSong, stopSong, preloadMenu, playMenu, stopMenu, songDodge, songCatch, songStrike, songOpen,
     LASERS, SLAMS,
     get ctx() { return ac; },
     get songBuf() { return curBuf(); },
+    get menuOn() { return !!menu.src; },
+    get menuBuf() { return menu.buf; },
   };
 })();
