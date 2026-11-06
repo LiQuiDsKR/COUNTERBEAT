@@ -5,8 +5,9 @@ const BPM = 150, BEAT = 60 / BPM, STEP = BEAT / 4, BAR = BEAT * 4;
 const INTRO_BARS = 2;
 const BOSS_X = W / 2, BOSS_Y = 230;
 // 드래그 감도 (설정에서 조절): 손가락 이동량 × 배율. 가속을 켜면 빠르게 휘두를수록 배율이 올라감(최대 기본 × 1.75)
-const SENS_LEVELS = [1.2, 1.4, 1.6, 1.9, 2.2];             // 이동 감도 1~5
-const ACCEL_LEVELS = [0, 0.5, 0.9, 1.4];   // 가속 OFF/약/중/강: 손가락 속도(css px/ms)당 추가 배율
+// 이동 감도 배율 ×1.0 ~ ×2.2 (0.1 단위). ×1.0 = 손가락·마우스 움직인 만큼 그대로 (마우스 피하기처럼)
+const SENS_LEVELS = Array.from({ length: 13 }, (_, i) => Math.round(10 + i) / 10);
+const ACCEL_LEVELS = [0, 0.5, 0.9, 1.4];   // 이동 가속 OFF/약/중/강: 손가락 속도(css px/ms)당 추가 배율
 const HIT_R = 4, PLAYER_R = 10, GRAZE_R = 30;
 const NODE_LEAD = BEAT * 1.5, FIN_LEAD = BEAT * 2.5;   // 공격 노드 예고 (1박/2박 ↔ 2박/3박 중간)
 const NODE_R = 46, FIN_R = 80;
@@ -62,16 +63,25 @@ function defaultLang() {
   return ['ko', 'en', 'ja', 'zh'].includes(l) ? l : 'en';
 }
 const ls = (k, d) => { const v = localStorage.getItem('cb_' + k); return v === null ? d : +v; };
+// 감도는 배율 값으로 저장(cb_sensx). 예전 단계 저장값(cb_sens: 1~5단계 = ×1.2 ×1.4 ×1.6 ×1.9 ×2.2)은 같은 배율로 옮김
+function loadSens() {
+  const v = localStorage.getItem('cb_sensx');
+  const x = v !== null ? +v : [1.2, 1.4, 1.6, 1.9, 2.2][ls('sens', 2)] ?? 1.6;
+  let best = 0;
+  SENS_LEVELS.forEach((s, i) => { if (Math.abs(s - x) < Math.abs(SENS_LEVELS[best] - x)) best = i; });
+  return best;
+}
 const opts = { god: false, hitbox: false,
   offset: ls('offset', 0),
   filter: localStorage.getItem('cb_filter') !== '0',
   lang: localStorage.getItem('cb_lang') || defaultLang(),   // 설정 화면 언어: ko / en / ja / zh
-  sens: ls('sens', 2), accel: ls('accel', 2), laser: ls('laser', 1), slam: ls('slam', 4),
+  sens: loadSens(), accel: ls('accel', 2), laser: ls('laser', 1), slam: ls('slam', 4),
   vol: ls('vol', 7), mvol: ls('mvol', 10) };   // 볼륨 0~10
 const applyVolume = () => Sound.setVolume(opts.vol / 10, opts.mvol / 10);
 applyVolume();
 function saveOpts() {
-  for (const k of ['offset', 'sens', 'accel', 'laser', 'slam', 'vol', 'mvol']) localStorage.setItem('cb_' + k, opts[k]);
+  for (const k of ['offset', 'accel', 'laser', 'slam', 'vol', 'mvol']) localStorage.setItem('cb_' + k, opts[k]);
+  localStorage.setItem('cb_sensx', SENS_LEVELS[opts.sens]);
   localStorage.setItem('cb_filter', opts.filter ? '1' : '0');
   localStorage.setItem('cb_lang', opts.lang);
 }
@@ -102,6 +112,22 @@ function setStage(stage) {
     }
   }
   SONG_BARS.endBar = secs[secs.length - 1][0];
+  // 녹음 차트(맵 에디터): 반격 구간 시작 마디 → { 구간 안 16분 위치: 노드 종류 }
+  CHART = {};
+  for (const [st, steps] of Object.entries(SONG.chart || {})) CHART[st] = chartKinds(steps);
+}
+// 차트 박 → 노드 종류. 마지막 = FINISH, 앞 노드와 8분 이하 간격 = 이어지는 연타(chain), 나머지 = 정박(beat)
+// 연타는 4개 단위로 끊음 (계속 같은 쪽으로 휘면 화면 밖으로 말려 나가니까, 4연타처럼 새 곡선으로 다시 시작)
+let CHART = {};
+function chartKinds(steps) {
+  const m = {};
+  let run = 0;
+  steps.forEach((st, i) => {
+    if (i === steps.length - 1) m[st] = 'fin';
+    else if (i > 0 && st - steps[i - 1] <= 2 && run < 4) { m[st] = 'chain'; run++; }
+    else { m[st] = 'beat'; run = 1; }
+  });
+  return m;
 }
 // 스테이지별 기록: cb_best_<id>, cb_rank_<id> (예전 cb_best 는 1스테이지로 옮김)
 if (localStorage.getItem('cb_best') !== null && localStorage.getItem('cb_best_1') === null) {
@@ -131,6 +157,8 @@ window.__cb = () => S; // 디버그용
 // ================= 곡 구조 =================
 const HARD_PATTERNS = ['split', 'x2', 'final'];   // 패턴3·4·FINAL (패턴1·2는 풀콤보 회복)   // WARNING 이후 어려운 반격
 const isWarn = info => info.pattern === 'split' || info.pattern === 'warning';   // WARNING 띠+경보음 구간
+// WARNING 이 뜨는 마디: 구간의 마지막 4마디 첫 마디 (8마디 회피면 뒤쪽 4마디 시작)
+const warnHere = info => isWarn(info) && info.k === Math.max(0, info.len - 4);
 const END_INFO = { type: 'end', d: 0, k: 0, len: 1, last: true, cycle: 0, tier: 0 };
 function barInfo(bar) {
   if (SONG_BARS) return SONG_BARS[bar] || END_INFO;
@@ -186,8 +214,8 @@ function scheduleAudio(g, t) {
     }
     if (info.type === 'strike' && info.k === 0 && s === 0) Sound.kick(t, true);
     // WARNING 구간 첫 마디: 박마다 경보음
-    if (isWarn(info) && info.k === 0 && s % 4 === 0) Sound.alarm(t, s === 0);
-    if (info.pattern === 'final' && s === 0) Sound.crash(t, 0.3);
+    if (warnHere(info) && s % 4 === 0) Sound.alarm(t, s === 0);
+    if (info.pattern === 'final' && info.k === 0 && s === 0) Sound.crash(t, 0.3);
     return;
   }
   if (info.type === 'intro') {
@@ -237,6 +265,9 @@ function spawnStep(g) {
     if (p.spray.includes(s)) spawnAimed(t, info.tier);
   } else if (info.type === 'strike') {
     if (info.k === 0 && s === 0) S.lastNode = { x: W / 2, y: 640 };
+    // 녹음 차트가 있으면 패턴 대신 차트 박자대로 (라벨은 회복 규칙·WARNING 연출에만 쓰임)
+    const chart = CHART[bar - info.k];
+    if (chart) { const kind = chart[info.k * 16 + s]; if (kind) spawnNode(t, kind); return; }
     if (info.pattern === 'split') {
       // SPLIT (곡이 4마디 단위와 어긋나는 구간): WARNING 후 박을 점점 잘게 쪼갬. 전부 4박 기준.
       //   1마디: 2분음표(1·3박) → 2마디: 4분음표 → 3마디: 8분 4연타 ×2 → 4마디: 8분 4연타 + FINISH
@@ -258,8 +289,9 @@ function spawnStep(g) {
       else if (s === 8) spawnNode(t, 'fin');
       return;
     }
-    if (info.pattern === 'x2') {
+    if (info.pattern === 'x2' || info.pattern === 'final') {
       // 2배 비트 (WARNING 이후): 4분음표 자리를 8분 4연타로. 마지막 마디는 보통과 같음
+      // FINAL 이 4마디면 앞 3마디도 2배 비트 (1마디짜리 FINAL 은 마지막 마디만 = 4연타 + FINISH)
       if (!info.last && s % 2 === 0) spawnNode(t, 'run', (s / 2) % 4);
       else if (info.last && s < 8 && s % 2 === 0) spawnNode(t, 'run', s / 2);
       else if (info.last && s === 8) spawnNode(t, 'fin');
@@ -290,7 +322,7 @@ function spawnLaser(t, pi, o) {
   if (at > Sound.ctx.currentTime - 0.02) Sound.LASERS[opts.laser].play(at, o === 'v' ? pos / W * 2 - 1 : 0);
 }
 // 곡 시간 → 오디오 컨텍스트 시간
-function ctxAt(songT) { return S.t0 + songT; }
+function ctxAt(songT) { return S.t0 + fileAt(songT); }   // S.t0 = 파일 0초가 울리는 오디오 시간
 function spawnSlam(t) {
   // 블라스트(코드명 slam)마다 좌우 번갈아 (예전엔 cycle 홀짝 기준이라 Suno 비트맵에서 항상 왼쪽만 나왔음)
   const side = (S.slamN = (S.slamN || 0) + 1) % 2 ? 'L' : 'R';
@@ -373,6 +405,23 @@ function pickPairPos(A, head, t) {
   }
   return best || [clamp(A.x + step, FIELD.x0, FIELD.x1), A.y];
 }
+// 차트 연타 노드: 4연타와 같은 규칙 — 이전 노드에서 한쪽으로 10~30° 꺾이며 이어짐 (꺾임은 연타 내내 ±3°).
+// 자리가 없으면(벽·다른 노드) 점점 넓게 찾음
+function pickChainPos(A, t) {
+  const c0 = S.chain || { head: 0, sgn: 1, turn: 0.35 }, step = NODE_R * 2 + GAP_RUN, D = Math.PI / 180;
+  let best = null, bestC = -Infinity;
+  for (const spread of [3, 25, 70, 180]) {
+    for (let k = 0; k < 200; k++) {
+      const a = c0.head + c0.sgn * c0.turn + (Math.random() * 2 - 1) * spread * D, d = step + Math.random() * 20;
+      const x = A.x + Math.cos(a) * d, y = A.y + Math.sin(a) * d;
+      if (!inField(x, y)) continue;
+      const c = nodeClearance(x, y, GAP_RUN, t);
+      if (c >= 0) return [x, y];
+      if (c > bestC) { bestC = c; best = [x, y]; }
+    }
+  }
+  return best || [clamp(A.x + step, FIELD.x0, FIELD.x1), A.y];
+}
 function spawnNode(t, kind, idx = 0) {
   let x = BOSS_X, y = BOSS_Y;
   const L = S.lastNode || { x: W / 2, y: 640 };
@@ -380,6 +429,13 @@ function spawnNode(t, kind, idx = 0) {
   else if (kind === 'pair' && idx === 0) { [x, y] = pickBeatPos(L, t); S.pairHead = Math.atan2(y - L.y, x - L.x); }
   else if (kind === 'pair') [x, y] = pickPairPos(L, S.pairHead ?? 0, t);
   else if (kind === 'run') { if (idx === 0 || !S.runPlan) S.runPlan = planRun(L, t); [x, y] = S.runPlan[idx]; }
+  else if (kind === 'chain') [x, y] = pickChainPos(L, t);
+  // 연타 방향: 정박 노드에서 새로 정함 (이동 방향 + 한쪽으로 휘는 각). 연타 노드는 그걸 이어받음
+  if (kind === 'chain' && S.chain) S.chain.head = Math.atan2(y - L.y, x - L.x);
+  else if (kind !== 'fin') {
+    const D = Math.PI / 180;
+    S.chain = { head: Math.atan2(y - L.y, x - L.x), sgn: Math.random() < 0.5 ? -1 : 1, turn: (10 + Math.random() * 20) * D };
+  }
   S.lastNode = { x, y, kind };
   const fin = kind === 'fin';
   S.nodes.push({ x, y, t, fin, kind, r: fin ? FIN_R : NODE_R, lead: fin ? FIN_LEAD : NODE_LEAD, state: 0 });
@@ -393,7 +449,7 @@ function onStep(g) {
   if (info.type === 'intro' && s === 0 && (bar === 0 || bar === info.len - 2)) {
     popText(bar === 0 ? 'READY' : 'DRAG TO DODGE', W / 2, H * 0.45, { size: bar === 0 ? 56 : 34, dur: BAR * 900, chroma: true });
   }
-  if (isWarn(info) && info.k === 0 && s === 0) {
+  if (warnHere(info) && s === 0) {
     S.warnUntil = t + BAR;   // WARNING 오버레이 1마디
   }
   if (info.type === 'dodge') {
@@ -448,9 +504,15 @@ function drop(info = {}) {
 }
 
 // ================= 런 관리 =================
+// 게임 시간(150 BPM 격자, 초) ↔ 곡 파일 위치(초)
+//   SONG.tempo = [[마디, 파일초], ...]: Suno 곡은 템포가 조금씩 흔들려서 마디 기준점 사이를 선형으로 이음
+//   tempo 없으면 고정 BPM + offset. 곡 없으면(합성 비트) 그대로
+//   계산은 songs.js 의 songFileAt / songGridAt (맵 에디터와 공용)
+const fileAt = g => SONG ? songFileAt(SONG, g) : g;
+const gridAt = p => SONG ? songGridAt(SONG, p) : p;
 function songTime() {
   const ac = Sound.ctx;
-  return ac.currentTime - S.t0 - (ac.outputLatency || 0) + opts.offset;
+  return gridAt(ac.currentTime - S.t0 - (ac.outputLatency || 0) + opts.offset);
 }
 // 다시하기
 function restartRun() { startRun(0); }
@@ -472,9 +534,9 @@ function startRun(fromBar = 0) {
   const keepX = S.player.x, keepY = S.player.y;
   S = freshState();
   S.mode = 'play';
-  const off = fromBar * BAR, ts = Sound.ctx.currentTime + 0.3;
+  const off = fileAt(fromBar * BAR), ts = Sound.ctx.currentTime + 0.3;
   S.t0 = ts - off;
-  if (SONG) Sound.playSong(ts, off + SONG.offset, opts.filter ? barInfo(fromBar).type : 'strike');
+  if (SONG) Sound.playSong(ts, off, opts.filter ? barInfo(fromBar).type : 'strike');
   S.audioStep = S.gameStep = fromBar * 16;
   S.evStep = fromBar * 16 - 1;
   if (fromBar > 0) { S.player.x = keepX; S.player.y = keepY; }
@@ -483,8 +545,8 @@ function startRun(fromBar = 0) {
 function pump() {
   if (S.mode !== 'play' || !Sound.ctx) return;
   const now = Sound.ctx.currentTime;
-  while (S.t0 + S.audioStep * STEP < now + 0.15) {
-    const t = S.t0 + S.audioStep * STEP;
+  while (ctxAt(S.audioStep * STEP) < now + 0.15) {
+    const t = ctxAt(S.audioStep * STEP);
     if (t > now - 0.03) scheduleAudio(S.audioStep, t);
     S.audioStep++;
   }

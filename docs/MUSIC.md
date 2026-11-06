@@ -66,6 +66,74 @@ Suno는 마디 수를 정확히 지키지 않음 → 곡 선택 후 비트맵 �
 
 ---
 
+# 2스테이지 곡 (Suno)
+
+## 목표
+- 1번(어둡고 거친 phonk, 카우벨, D minor)과 다른 분위기 → **하드스타일 × 사이버펑크**: 무대 위의 웅장하고 뜨거운 에너지
+- 150 BPM (게임 그리드 고정, 하드스타일 표준 템포), E minor
+- 드롭 직전 정적 = 캐치 포인트 (하드스타일 장르 공식과 일치)
+- 4마디 단위 프레이즈, 드롭은 마디 첫 박에
+
+## Style
+```
+instrumental hardstyle x cyberpunk electronic, 150 BPM, E minor, distorted hardstyle kick, reverse bass, soaring supersaw lead melody, gated synth stabs, euphoric yet intense boss battle energy, dramatic breakdowns, hard-cut silence right before every drop, 4-bar phrases, drops land on the downbeat, steady tempo, no vocals, no rap, no singing, no cowbell, not phonk, not lo-fi, not chill, no tempo changes
+```
+
+## Lyrics (구조 태그만)
+```
+[Instrumental]
+
+[Intro]
+[pulsing synth arpeggio, filtered kick, tension]
+
+[Build-Up]
+[rising supersaw, snare roll, riser]
+
+[Stop]
+[one beat of total silence]
+
+[Drop]
+[hard distorted kick, reverse bass, soaring lead melody]
+
+[Breakdown]
+[atmospheric pads, lead melody alone, emotional but tense]
+
+[Build-Up]
+[faster snare roll, pitch riser]
+
+[Stop]
+
+[Drop]
+[heavier kick, gated synth stabs, lead melody returns]
+
+[Build-Up]
+[maximum tension, riser]
+
+[Stop]
+
+[Final Drop]
+[biggest drop, everything hits]
+
+[Outro]
+[kick fades, synth echo]
+```
+
+## 선곡 기준
+1. 드롭 전 정적이 확실한가
+2. 템포 일정 (하드스타일 '안티 클라이맥스'의 템포 다운 구간 X → 게임 박자 어긋남)
+3. 리드 멜로디가 또렷한가 (레이저/노드 배치 힌트)
+
+다른 BPM 장르(DnB 174 등)를 쓰려면 게임의 곡별 BPM 지원이 먼저 필요.
+
+## 결과: `music/2. UNREACHABLE.mp3`
+- 4분 7초, 0마디 픽업 → 1마디부터 곡. 드롭 33·53·93·125마디, 각 드롭 직전 베이스 끊김/라이저
+- 템포가 150 → 중반 151~152.5 → 끝 150 근처로 흔들림 (Suno 드리프트). 고정 150이면 후반에 1박 넘게 밀림
+  → `songs.js`의 `tempo` 템포맵(4마디마다 킥 위치 기준점)으로 맞춤. 기준점 사이 오차 대부분 ±4ms
+- 드롭1 뒤 14+6마디라 45~52마디만 8마디 회피, 나머지는 4마디 교대
+- 반격 박자는 구간마다 새 리듬 `chart` (패턴 1·2 재탕 안 함). [editor.html](../editor.html)에서 곡과 같이 들어보며 수정
+
+---
+
 # 로비 / 메뉴 BGM (Suno)
 
 ## 목표

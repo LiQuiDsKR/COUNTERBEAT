@@ -3,11 +3,11 @@
 // - 코드/HTML: 네트워크 우선 (배포하면 바로 최신), 오프라인이면 캐시
 // - 곡/아이콘: 캐시 우선 (용량 큼, 잘 안 바뀜)
 // 곡 파일을 교체하면 CACHE 버전을 올릴 것.
-const CACHE = 'counterbeat-v4';
+const CACHE = 'counterbeat-v5';
 const CORE = [
   './', './index.html', './audio.js', './songs.js', './game.js',
   './ui.js', './manifest.webmanifest', './icons/icon-192.png', './icons/icon-512.png',
-  './icons/apple-touch-icon.png', './music/0.%20Lobby.mp3', './music/1.%20CATCH%20POINT.mp3',
+  './icons/apple-touch-icon.png', './music/0.%20Lobby.mp3', './music/1.%20CATCH%20POINT.mp3', './music/2.%20UNREACHABLE.mp3',
 ];
 
 self.addEventListener('install', e => {
