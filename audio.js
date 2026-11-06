@@ -1,0 +1,176 @@
+'use strict';
+// WebAudio 합성 phonk 키트. 음원 파일 없음 → 저작권 걱정 없고 싱크 완벽.
+const Sound = (() => {
+  let ac = null, comp, sfxOut, noiseBuf, hard, soft, bus = null, lastGraze = 0;
+
+  const makeCurve = k => {
+    const n = 2048, c = new Float32Array(n);
+    for (let i = 0; i < n; i++) { const x = i / (n - 1) * 2 - 1; c[i] = Math.tanh(k * x) / Math.tanh(k); }
+    return c;
+  };
+
+  function init() {
+    if (ac) { if (ac.state === 'suspended') ac.resume(); return; }
+    const AC = window.AudioContext || window.webkitAudioContext;
+    ac = new AC({ latencyHint: 'interactive' });
+    comp = ac.createDynamicsCompressor();
+    comp.threshold.value = -12; comp.knee.value = 6; comp.ratio.value = 4;
+    comp.attack.value = 0.003; comp.release.value = 0.12;
+    const master = ac.createGain(); master.gain.value = 0.9;
+    comp.connect(master); master.connect(ac.destination);
+    sfxOut = ac.createGain(); sfxOut.gain.value = 0.7; sfxOut.connect(comp);
+    noiseBuf = ac.createBuffer(1, ac.sampleRate * 2, ac.sampleRate);
+    const d = noiseBuf.getChannelData(0);
+    for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+    hard = makeCurve(7); soft = makeCurve(2.2);
+    if (ac.state === 'suspended') ac.resume();
+  }
+
+  // 판마다 새 버스. 재시작 시 이전 판 예약음 즉시 컷.
+  function newBus() {
+    if (bus) {
+      const old = bus, t = ac.currentTime;
+      old.gain.cancelScheduledValues(t); old.gain.setValueAtTime(old.gain.value, t);
+      old.gain.linearRampToValueAtTime(0, t + 0.05);
+      setTimeout(() => { try { old.disconnect(); } catch (_) {} }, 400);
+    }
+    bus = ac.createGain(); bus.gain.value = 1; bus.connect(comp);
+  }
+  function fadeOut(sec) {
+    if (!bus) return;
+    const t = ac.currentTime, g = bus.gain;
+    g.cancelScheduledValues(t); g.setValueAtTime(g.value, t); g.linearRampToValueAtTime(0.0001, t + sec);
+  }
+
+  function env(g, t, a, peak, dec) {
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(peak, t + a);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + a + dec);
+  }
+  function noiseSrc(t, dur) {
+    const s = ac.createBufferSource(); s.buffer = noiseBuf; s.loop = true;
+    s.start(t, Math.random()); s.stop(t + dur); return s;
+  }
+  function osc(type, f, t, dur) {
+    const o = ac.createOscillator(); o.type = type; o.frequency.setValueAtTime(f, t);
+    o.start(t); o.stop(t + dur); return o;
+  }
+
+  function kick(t, big = false, out = bus) {
+    const o = osc('sine', big ? 200 : 165, t, 0.8), g = ac.createGain();
+    o.frequency.exponentialRampToValueAtTime(43, t + (big ? 0.16 : 0.11));
+    env(g, t, 0.002, big ? 1.15 : 0.95, big ? 0.55 : 0.33);
+    o.connect(g).connect(out);
+    const c = noiseSrc(t, 0.02), cg = ac.createGain(), hp = ac.createBiquadFilter();
+    hp.type = 'highpass'; hp.frequency.value = 3000; env(cg, t, 0.0005, 0.25, 0.012);
+    c.connect(hp).connect(cg).connect(out);
+  }
+  // 찢어지는 808
+  function bass(t, f, dur, vol = 0.8, out = bus) {
+    const o = osc('sine', f * 2.2, t, dur + 0.2), pre = ac.createGain(), sh = ac.createWaveShaper(),
+      lp = ac.createBiquadFilter(), g = ac.createGain();
+    o.frequency.exponentialRampToValueAtTime(f, t + 0.04);
+    pre.gain.value = 1.4; sh.curve = hard; lp.type = 'lowpass'; lp.frequency.value = 900;
+    env(g, t, 0.003, vol, dur);
+    o.connect(pre).connect(sh).connect(lp).connect(g).connect(out);
+  }
+  function clap(t, vol = 0.45, out = bus) {
+    const s = noiseSrc(t, 0.35), bp = ac.createBiquadFilter(), g = ac.createGain();
+    bp.type = 'bandpass'; bp.frequency.value = 1500; bp.Q.value = 0.9;
+    g.gain.setValueAtTime(0.0001, t);
+    for (const o of [0, 0.011, 0.022]) {
+      g.gain.setValueAtTime(vol, t + o);
+      g.gain.exponentialRampToValueAtTime(vol * 0.25, t + o + 0.009);
+    }
+    g.gain.setValueAtTime(vol * 0.8, t + 0.033);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.25);
+    s.connect(bp).connect(g).connect(out);
+  }
+  function hat(t, vol = 0.1, len = 0.035, out = bus) {
+    const s = noiseSrc(t, len + 0.05), hp = ac.createBiquadFilter(), g = ac.createGain();
+    hp.type = 'highpass'; hp.frequency.value = 7800; env(g, t, 0.001, vol, len);
+    s.connect(hp).connect(g).connect(out);
+  }
+  // 808 카우벨 (두 사각파 비율 1.48)
+  function bell(t, f, vol = 0.22, out = bus) {
+    const bp = ac.createBiquadFilter(), sh = ac.createWaveShaper(), g = ac.createGain();
+    bp.type = 'bandpass'; bp.frequency.value = f * 1.25; bp.Q.value = 1.4; sh.curve = soft;
+    for (const m of [1, 1.48]) osc('square', f * m, t, 0.5).connect(bp);
+    g.gain.setValueAtTime(0.0001, t); g.gain.linearRampToValueAtTime(vol, t + 0.002);
+    g.gain.exponentialRampToValueAtTime(vol * 0.3, t + 0.035);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.42);
+    bp.connect(sh).connect(g).connect(out);
+  }
+  function crash(t, vol = 0.3, out = bus) {
+    const s = noiseSrc(t, 2), hp = ac.createBiquadFilter(), g = ac.createGain();
+    hp.type = 'highpass'; hp.frequency.value = 4000; env(g, t, 0.002, vol, 1.6);
+    s.connect(hp).connect(g).connect(out);
+  }
+  function riser(t, dur, out = bus) {
+    const s = noiseSrc(t, dur), bp = ac.createBiquadFilter(), g = ac.createGain();
+    bp.type = 'bandpass'; bp.Q.value = 3;
+    bp.frequency.setValueAtTime(300, t); bp.frequency.exponentialRampToValueAtTime(8000, t + dur);
+    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.3, t + dur - 0.005);
+    g.gain.linearRampToValueAtTime(0.0001, t + dur);
+    s.connect(bp).connect(g).connect(out);
+  }
+  function roar(t, out = bus) {
+    const o = osc('sawtooth', 150, t, 0.6), o2 = osc('sawtooth', 153, t, 0.6),
+      sh = ac.createWaveShaper(), lp = ac.createBiquadFilter(), g = ac.createGain();
+    o.frequency.exponentialRampToValueAtTime(38, t + 0.45);
+    o2.frequency.exponentialRampToValueAtTime(37, t + 0.45);
+    sh.curve = hard; lp.type = 'lowpass';
+    lp.frequency.setValueAtTime(2500, t); lp.frequency.exponentialRampToValueAtTime(180, t + 0.45);
+    env(g, t, 0.01, 0.4, 0.42);
+    o.connect(sh); o2.connect(sh); sh.connect(lp).connect(g).connect(out);
+  }
+
+  // ---- 즉발 효과음 ----
+  function sfxSlash(j, f, fin) {
+    const t = ac.currentTime;
+    const s = noiseSrc(t, 0.2), hp = ac.createBiquadFilter(), g = ac.createGain();
+    hp.type = 'highpass'; hp.frequency.setValueAtTime(5000, t); hp.frequency.exponentialRampToValueAtTime(1200, t + 0.08);
+    env(g, t, 0.001, fin ? 0.6 : 0.35, fin ? 0.25 : 0.09);
+    s.connect(hp).connect(g).connect(sfxOut);
+    const o = osc('triangle', f, t, 0.3), og = ac.createGain();
+    env(og, t, 0.002, j === 'perfect' ? 0.35 : 0.22, 0.2); o.connect(og).connect(sfxOut);
+    if (j === 'perfect') {
+      const o2 = osc('sine', f * 2, t, 0.3), g2 = ac.createGain();
+      env(g2, t, 0.002, 0.15, 0.25); o2.connect(g2).connect(sfxOut);
+    }
+  }
+  function sfxGraze() {
+    const t = ac.currentTime; if (t - lastGraze < 0.03) return; lastGraze = t;
+    const o = osc('sine', 2600 + Math.random() * 400, t, 0.06), g = ac.createGain();
+    env(g, t, 0.001, 0.05, 0.035); o.connect(g).connect(sfxOut);
+  }
+  function sfxHit() {
+    const t = ac.currentTime;
+    const s = noiseSrc(t, 0.4), lp = ac.createBiquadFilter(), g = ac.createGain();
+    lp.type = 'lowpass'; lp.frequency.value = 1200; env(g, t, 0.002, 0.6, 0.3);
+    s.connect(lp).connect(g).connect(sfxOut);
+    const o = osc('square', 90, t, 0.35), og = ac.createGain();
+    o.frequency.exponentialRampToValueAtTime(40, t + 0.3);
+    env(og, t, 0.002, 0.3, 0.3); o.connect(og).connect(sfxOut);
+  }
+  // 결과창 행 등장 틱
+  function sfxTick(mul = 1) {
+    const t = ac.currentTime;
+    hat(t, 0.12, 0.03, sfxOut);
+    const o = osc('triangle', 587.33 * mul, t, 0.12), g = ac.createGain();
+    env(g, t, 0.001, 0.12, 0.08); o.connect(g).connect(sfxOut);
+  }
+  // 도장 쾅
+  function sfxStamp(big) {
+    const t = ac.currentTime;
+    kick(t, true, sfxOut); clap(t, big ? 0.6 : 0.4, sfxOut);
+    if (big) crash(t, 0.3, sfxOut);
+  }
+  function sfxBoom() { const t = ac.currentTime; kick(t, true, sfxOut); crash(t, 0.4, sfxOut); roar(t, sfxOut); }
+
+  return {
+    init, newBus, fadeOut, kick, bass, clap, hat, bell, crash, riser, roar,
+    sfxSlash, sfxGraze, sfxHit, sfxBoom, sfxTick, sfxStamp,
+    get ctx() { return ac; },
+  };
+})();
