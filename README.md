@@ -12,6 +12,16 @@ python -m http.server 5173
 
 브라우저에서 `http://localhost:5173` → 탭해서 시작. **소리 켜고 플레이.**
 
+## 홈 화면에 추가 (앱처럼 실행)
+
+PWA 지원. 배포 주소(HTTPS)에서:
+- **Android Chrome:** 메뉴 → `홈 화면에 추가` / `앱 설치`
+- **iOS Safari:** 공유 → `홈 화면에 추가`
+
+전체 화면·세로 고정으로 실행되고, 한 번 열면 곡까지 캐시돼서 오프라인에서도 플레이 가능.
+코드/HTML은 네트워크 우선이라 배포하면 다음 실행 때 반영됨. **곡 파일을 바꾸면 `sw.js`의 `CACHE` 버전을 올릴 것.**
+아이콘은 `python tools/make_icons.py`로 다시 생성.
+
 ## 플레이 방법
 
 - **이동:** 화면 아무 곳이나 드래그. 손가락이 움직인 만큼 캐릭터가 따라감(상대 이동)이라 손가락에 캐릭터가 가려지지 않음.
@@ -72,6 +82,8 @@ python -m http.server 5173
 ```
 index.html   캔버스 + 스크립트 로드
 lab.html     사운드 랩: 레이저/슬램 소리 후보 미리듣기
+manifest.webmanifest, sw.js, icons/   홈 화면 앱(PWA)
+tools/       아이콘 생성 스크립트
 audio.js     WebAudio 합성 phonk 키트 + 곡 재생/덕킹
 songs.js     곡 비트맵 (BPM, 첫 박 오프셋, 구간 목록)
 music/       곡 파일
