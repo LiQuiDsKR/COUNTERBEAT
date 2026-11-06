@@ -250,10 +250,12 @@ function draw() {
     const st = r * STEPS_BAR + c, x = c * cw, y = r * rh + 2;
     cx.fillStyle = st > maxStep(sc) ? 'rgba(255,255,255,.03)' : c % 4 === 0 ? 'rgba(255,255,255,.09)' : 'rgba(255,255,255,.045)';
     cx.fillRect(x + 1, y + 1, cw - 2, rh - 2);
-    if (notes.includes(st)) {
-      cx.fillStyle = st === last ? '#ff1e56' : '#00e5ff';
-      cx.beginPath(); cx.arc(x + cw / 2, y + rh / 2, st === last ? 15 : 11, 0, Math.PI * 2); cx.fill();
-    }
+  }
+  // 노드 (셋잇단 같은 칸 사이 값은 칸 사이에 그림)
+  for (const st of notes) {
+    const r = Math.floor(st / STEPS_BAR + 1e-6), c = st - r * STEPS_BAR;
+    cx.fillStyle = st === last ? '#ff1e56' : st % 1 ? '#b06bff' : '#00e5ff';
+    cx.beginPath(); cx.arc((c + 0.5) * cw, r * rh + 2 + rh / 2, st === last ? 15 : 11, 0, Math.PI * 2); cx.fill();
   }
   // 녹음 중 탭 (스냅 전 위치)
   if (play && play.mode === 'rec') {

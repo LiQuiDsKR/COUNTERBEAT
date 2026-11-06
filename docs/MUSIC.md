@@ -134,6 +134,73 @@ instrumental hardstyle x cyberpunk electronic, 150 BPM, E minor, distorted hards
 
 ---
 
+# 3스테이지 곡 (Suno)
+
+## 목표
+- 1번(phonk, D minor)·2번(하드스타일, E minor)과 다른 분위기 → **하이브리드 트랩 × 시네마틱**: 어둡고 신비로운 보라색 의식(儀式) 같은 보스전
+- 오케스트라 브라스·합창·종소리 + 808 슬라이드. 드롭은 하프타임(묵직하게 쿵… 쾅)이라 1·2번의 달리는 느낌과 대비
+- 150 BPM (하프타임 = 체감 75), F# minor
+- 드롭 직전 정적 = 캐치 포인트, 4마디 프레이즈, 드롭은 마디 첫 박에
+- 템포 흔들림은 템포맵으로 맞출 수 있지만 적을수록 좋음
+
+## Style
+```
+instrumental hybrid trap x dark cinematic orchestral, 150 BPM half-time, F# minor, massive 808 slides, epic brass stabs, dark choir chants, church bells, pizzicato strings ostinato, mystical ritual boss battle, heavy half-time drops, hard-cut silence right before every drop, 4-bar phrases, drops land on the downbeat, steady tempo, no vocals, no lyrics, no rap, no cowbell, not phonk, not hardstyle, not lo-fi, no tempo changes
+```
+
+## Lyrics (구조 태그만)
+```
+[Instrumental]
+
+[Intro]
+[church bell, low choir hum, pizzicato strings ostinato]
+
+[Build-Up]
+[timpani roll, rising choir, snare build]
+
+[Stop]
+[one beat of total silence]
+
+[Drop]
+[half-time trap beat, massive 808 slide, epic brass stabs]
+
+[Breakdown]
+[dark choir and bells alone, mysterious]
+
+[Build-Up]
+[faster timpani roll, string riser]
+
+[Stop]
+
+[Drop]
+[heavier 808, brass and choir together, hi-hat rolls]
+
+[Build-Up]
+[maximum tension, full orchestra riser]
+
+[Stop]
+
+[Final Drop]
+[biggest drop, everything hits]
+
+[Outro]
+[bell rings out, choir fades]
+```
+
+## 선곡 기준
+1. 드롭 전 정적이 확실한가
+2. 하프타임이어도 킥/스네어가 또렷한가 (박 분석·반격 리듬 기준)
+3. 템포 일정 (중간에 템포 바뀌는 구간 X)
+4. 브라스·종 같은 또렷한 악센트가 있는가 (반격 리듬 힌트)
+
+## 결과: `music/3. STALEMATE.mp3`
+- 3분 43초, 템포 150 고정(흔들림 없음) → 템포맵 없이 `offset` 0.430초만. 파일 첫 0.4초는 픽업
+- 큰 임팩트·드롭이 전부 4마디 첫 박: 드롭 40·56·92·128, 임팩트 8·16·24·32·72·76·80·84·88·132·136
+- 드롭 사이가 36마디(4마디 9개)라 76~83, 120~127 두 곳만 8마디 회피
+- 셋잇단 하이햇 → 반격 리듬에 셋잇단 처음 사용 (chart 값 x.33 / x.67)
+
+---
+
 # 로비 / 메뉴 BGM (Suno)
 
 ## 목표
