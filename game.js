@@ -6,6 +6,8 @@ const INTRO_BARS = 2;
 const BOSS_X = W / 2, BOSS_Y = 230;
 const SENS = 1.3;                       // 드래그 감도
 const HIT_R = 4, PLAYER_R = 10, GRAZE_R = 30;
+const MAX_LIVES = 5;                    // 체력 칸. FINISH 성공 시 1칸 회복
+const BULLET_HIT = 0.6;                 // 탄 실제 판정 = 보이는 반지름 × 0.6 (탄막 관례)
 let BOSS_HP = 1000;
 const D5 = 587.33, D2 = 73.42;
 const semi = n => Math.pow(2, n / 12);
@@ -43,6 +45,7 @@ function resize() {
 addEventListener('resize', resize); resize();
 
 // ================= 상태 =================
+const LASER_SFX = 1, SLAM_SFX = 4;   // 고정: Railgun, Glitch Crush (후보는 lab.html)
 const opts = { god: false, hitbox: false, offset: +(localStorage.getItem('cb_offset') || 0),
   filter: localStorage.getItem('cb_filter') !== '0' };   // 공수 교대 DJ 필터 (F 키)
 const params = new URLSearchParams(location.search);
@@ -76,7 +79,7 @@ function freshState() {
   return {
     mode: 'title', paused: false, t0: 0, audioStep: 0, gameStep: 0, evStep: -1,
     player: { x: W / 2, y: H * 0.78 }, prevX: W / 2, prevY: H * 0.78, trail: [],
-    lives: 3, invulnUntil: -1, bossHp: BOSS_HP, bossShown: BOSS_HP, bossFlash: 0,
+    lives: MAX_LIVES, healPulse: 0, invulnUntil: -1, bossHp: BOSS_HP, bossShown: BOSS_HP, bossFlash: 0,
     hazards: [], nodes: [], parts: [], texts: [],
     gauge: 0, combo: 0, maxCombo: 0, cycleDmg: 0, lastNode: null, slashN: 0,
     stats: { perfect: 0, great: 0, good: 0, miss: 0, graze: 0, hits: 0 },
@@ -119,7 +122,7 @@ function dodgeBar(d, tier) {
     p.bell = tier >= 1 ? [[2, -7], [12, 3]] : [[12, 3]];
   } else {
     p.kick = [0, 4, 8];
-    p.spray = tier >= 2 ? [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11] : [0, 2, 4, 6, 8, 10];
+    p.spray = tier >= 3 ? [0, 2, 4, 6, 8, 9, 10] : [0, 2, 4, 6, 8, 10];
     p.riser = true; p.clap = [];
     if (tier >= 1) p.bell = [[2, 0], [10, 5]];
   }
@@ -159,9 +162,7 @@ function scheduleAudio(g, t) {
     const p = dodgeBar(info.d, info.tier);
     if (kicks.includes(s)) Sound.kick(t);
     if (s === 0) Sound.bass(t, D2 * semi(BASS_ROOT[info.d]), 0.5, 0.4);
-    if (p.slam === s) { Sound.kick(t, true); Sound.bass(t, D2 * semi(-5), 0.9, 1.0); Sound.crash(t, 0.18); }
     if (p.clap.includes(s)) Sound.clap(t, 0.32);
-    for (const [st, pi] of p.bell) if (st === s) Sound.bell(t, D5 * semi(pi), 0.26);
     if (info.d === 3) { Sound.hat(t, 0.04 + s * 0.008, 0.025); if (s === 0) Sound.riser(t, STEP * 12); }
     else if (s % 2 === 0) Sound.hat(t, s % 4 === 2 ? 0.11 : 0.06);
     return;
@@ -200,7 +201,7 @@ function spawnStep(g) {
   }
 }
 function spawnRing(t, tier, off) {
-  const n = 12 + tier * 3, sp = 150 + tier * 22;
+  const n = 12 + tier * 2, sp = 145 + tier * 18;
   for (let i = 0; i < n; i++) {
     const a = off + i / n * Math.PI * 2;
     S.hazards.push({ k: 'b', t0: t, x0: BOSS_X, y0: BOSS_Y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, r: 8 });
@@ -213,16 +214,17 @@ function spawnAimed(t, tier) {
 function spawnLaser(t, pi, o) {
   const u = clamp((pi + 7) / 14, 0, 1);
   const pos = o === 'h' ? 400 + (1 - u) * 480 : 60 + u * 420;
-  S.hazards.push({ k: 'l', o, pos, tw: t - BEAT, tf: t, te: t + 0.14, w: 34 });
-  // Suno 모드: 원래 합성 비트의 카우벨을 레이저 발사음으로 (합성 모드는 음악에 이미 있음)
-  if (SONG) Sound.bell(ctxAt(t), D5 * semi(pi), 0.26);
+  S.hazards.push({ k: 'l', o, pos, tw: t - BEAT * 2, tf: t, te: t + 0.14, w: 34 });   // 예고 2박 (원래 1박)
+  // 레이저 소리: 고정 음높이 (멜로디 없음). 세로 레이저는 위치 따라 패닝
+  const at = ctxAt(t);
+  if (at > Sound.ctx.currentTime - 0.02) Sound.LASERS[LASER_SFX].play(at, o === 'v' ? pos / W * 2 - 1 : 0);
 }
 // 곡 시간 → 오디오 컨텍스트 시간
 function ctxAt(songT) { return S.t0 + songT; }
 function spawnSlam(t, cycle) {
   S.hazards.push({ k: 's', side: cycle % 2 === 0 ? 'L' : 'R', tw: t - BEAT * 2, tf: t, te: t + 0.25 });
-  // Suno 모드: 원래 슬램 사운드 (빅 킥 + 808 + 크래시)
-  if (SONG) { const at = ctxAt(t); Sound.kick(at, true); Sound.bass(at, D2 * semi(-5), 0.9, 1.0); Sound.crash(at, 0.18); }
+  const at = ctxAt(t);
+  if (at > Sound.ctx.currentTime - 0.02) Sound.SLAMS[SLAM_SFX].play(at, cycle % 2 === 0 ? -0.4 : 0.4);
 }
 function spawnNode(t, fin, near) {
   let x = BOSS_X, y = BOSS_Y;
@@ -335,14 +337,14 @@ function update(T, dt) {
         const x = h.x0 + h.vx * (T - h.t0), y = h.y0 + h.vy * (T - h.t0);
         if (x < -40 || x > W + 40 || y < -40 || y > H + 40) { h.dead = true; continue; }
         const d = Math.hypot(x - px, y - py);
-        if (d < h.r + HIT_R) { if (canHit) { h.dead = true; playerHit(T); } }
+        if (d < h.r * BULLET_HIT + HIT_R) { if (canHit) { h.dead = true; playerHit(T); } }
         else if (!h.grazed && d < h.r + GRAZE_R && T >= S.invulnUntil) { h.grazed = true; graze(x, y, 3); }
       } else if (h.k === 'l') {
         if (T > h.te + 0.3) { h.dead = true; continue; }
         if (T >= h.tf && !h.fx) { h.fx = true; S.shake = Math.max(S.shake, 0.25); }
         if (T >= h.tf && T <= h.te) {
           const d = h.o === 'h' ? Math.abs(py - h.pos) : Math.abs(px - h.pos);
-          if (d < h.w / 2 + HIT_R) { if (canHit) playerHit(T); }
+          if (d < h.w * 0.4 + HIT_R) { if (canHit) playerHit(T); }
           else if (!h.grazed && d < h.w / 2 + GRAZE_R + 6 && T >= S.invulnUntil) {
             h.grazed = true; graze(h.o === 'h' ? px : h.pos, h.o === 'h' ? h.pos : py, 5);
           }
@@ -386,7 +388,8 @@ function graze(x, y, amt) {
   burst(mx, my, 4, 'acc', 180, 2.5, 0.3);
 }
 function playerHit(T) {
-  S.lives--; S.stats.hits++; S.combo = 0; S.invulnUntil = T + 1.2;
+  S.lives--; S.stats.hits++; S.combo = 0; S.invulnUntil = T + 1.5;
+  clearAround(T, 130);   // 맞으면 주변 탄 정리 (숨 돌릴 틈)
   S.shake = 1; S.flash = 0.5; S.flashCol = '#ff1e56'; S.hitstopUntil = performance.now() + 120;
   burst(S.player.x, S.player.y, 26, '#ff1e56', 420, 4, 0.6);
   Sound.sfxHit();
@@ -396,6 +399,14 @@ function playerHit(T) {
 function timeUp(T) {
   S.timeUp = true; S.mode = 'dead'; S.endT = T; finishRun();
   Sound.fadeOut(1.5);
+}
+function clearAround(T, r) {
+  const { x: px, y: py } = S.player;
+  for (const h of S.hazards) {
+    if (h.k !== 'b' || T < h.t0 || (h.aim && !h.aimed)) continue;
+    const x = h.x0 + h.vx * (T - h.t0), y = h.y0 + h.vy * (T - h.t0);
+    if (Math.hypot(x - px, y - py) < r) { h.dead = true; burst(x, y, 3, 'fg', 200, 3, 0.4); }
+  }
 }
 function die(T) {
   S.mode = 'dead'; S.endT = T; finishRun();
@@ -417,7 +428,17 @@ function nodeHit(n, T) {
   slashFx(n, ang);
   S.hitstopUntil = performance.now() + (n.fin ? 140 : j === 'perfect' ? 60 : 35);
   S.shake = Math.max(S.shake, n.fin ? 1.3 : 0.35);
-  if (n.fin) { S.flash = 0.6; S.flashCol = '#ff1e56'; }
+  if (n.fin) {
+    S.flash = 0.6; S.flashCol = '#ff1e56';
+    // 회복: FINISH 성공 = 체력 1칸. 꽉 찼으면 점수 보너스
+    if (S.lives < MAX_LIVES) {
+      S.lives++; S.healPulse = 1; Sound.sfxHeal();
+      popText('+1 HP', S.player.x, S.player.y - 40, { size: 24, col: 'acc', dur: 900, rise: 50 });
+    } else {
+      S.score += 500;
+      popText('FULL +500', S.player.x, S.player.y - 40, { size: 20, col: 'acc', dur: 900, rise: 50 });
+    }
+  }
   popText(label, n.x, n.y - 50, { size: n.fin ? 44 : 26, col: j === 'perfect' ? 'acc' : 'fg', dur: 500 });
   popText(String(dmg), n.x + 34, n.y - 8, { size: 18, dur: 600, rise: 60 });
   Sound.sfxSlash(j, D5 * semi(SLASH_SCALE[Math.min(S.slashN++, SLASH_SCALE.length - 1)] - 12), n.fin);
@@ -430,7 +451,7 @@ function win(T) {
       burst(h.x0 + h.vx * (T - h.t0), h.y0 + h.vy * (T - h.t0), 3, 'fg', 260, 3, 0.6);
   }
   S.hazards = []; S.nodes = []; S.catchT = null;
-  S.mode = 'win'; S.endT = T; S.score += S.lives * 1000; finishRun();
+  S.mode = 'win'; S.endT = T; S.score += S.lives * 600; finishRun();
   Sound.fadeOut(2.5); Sound.sfxBoom();
   S.flash = 1; S.flashCol = '#ffffff'; S.shake = 2;
   for (let i = 0; i < 5; i++) burst(BOSS_X, BOSS_Y, 30, i % 2 ? 'acc' : 'fg', 300 + i * 200, 6, 1.4);
@@ -745,13 +766,14 @@ function drawHUD(pal, T) {
     ctx.globalAlpha = 1;
   }
 
-  for (let i = 0; i < 3; i++) {
-    const x = 36 + i * 26, y = H - 40;
-    ctx.beginPath(); ctx.moveTo(x, y - 10); ctx.lineTo(x + 8, y); ctx.lineTo(x, y + 10); ctx.lineTo(x - 8, y); ctx.closePath();
+  for (let i = 0; i < MAX_LIVES; i++) {
+    const x = 30 + i * 22, y = H - 40;
+    const sc = i === S.lives - 1 ? 1 + S.healPulse * 0.8 : 1;
+    ctx.beginPath(); ctx.moveTo(x, y - 9 * sc); ctx.lineTo(x + 7 * sc, y); ctx.lineTo(x, y + 9 * sc); ctx.lineTo(x - 7 * sc, y); ctx.closePath();
     if (i < S.lives) { ctx.fillStyle = pal.acc; ctx.fill(); }
     else { ctx.strokeStyle = `rgba(${pal.grid},0.3)`; ctx.lineWidth = 2; ctx.stroke(); }
   }
-  const gx = 150, gw = 240, gy = H - 44;
+  const gx = 160, gw = 220, gy = H - 44;
   ctx.fillStyle = `rgba(${pal.grid},0.12)`; ctx.fillRect(gx, gy, gw, 8);
   ctx.fillStyle = pal.acc; ctx.fillRect(gx, gy, gw * S.gauge / 100, 8);
   text('GRAZE', gx, gy - 12, 11, pal.fg, { align: 'left', alpha: 0.6 });
@@ -776,8 +798,8 @@ function drawTitle(pal, now) {
 function rank() {
   const s = S.stats, tot = s.perfect + s.great + s.good + s.miss;
   const acc = tot ? (s.perfect + s.great * 0.7 + s.good * 0.4) / tot : 0;
-  if (s.hits === 0 && acc > 0.85) return 'S';
-  if (s.hits <= 1 && acc > 0.7) return 'A';
+  if (s.hits <= 1 && acc > 0.85) return 'S';
+  if (s.hits <= 3 && acc > 0.7) return 'A';
   if (acc > 0.5) return 'B';
   return 'C';
 }
@@ -939,6 +961,7 @@ function frame(now) {
   S.shake = Math.max(0, S.shake - dt * 3);
   S.flash = Math.max(0, S.flash - dt * 3.5);
   S.bossFlash = Math.max(0, S.bossFlash - dt);
+  S.healPulse = Math.max(0, S.healPulse - dt * 2);
   S.bossShown += (S.bossHp - S.bossShown) * Math.min(1, dt * 3);
   if (S.mode === 'play') S.trail.push({ x: S.player.x, y: S.player.y, t: now });
   while (S.trail.length && now - S.trail[0].t > 140) S.trail.shift();

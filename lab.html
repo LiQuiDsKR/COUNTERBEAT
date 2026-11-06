@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>COUNTERBEAT sound lab</title>
+<style>
+  :root { --bg: #07070c; --fg: #fff; --acc: #00e5ff; --hot: #ff1e56; --dim: rgba(255,255,255,.12); }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.5 "Malgun Gothic", "Apple SD Gothic Neo", sans-serif; }
+  main { max-width: 560px; margin: 0 auto; padding: 28px 18px 60px; }
+  h1 { font: 900 30px "Arial Black", Impact, sans-serif; margin: 0 0 4px; letter-spacing: 1px; }
+  h1 span { color: var(--acc); }
+  .sub { opacity: .6; margin: 0 0 26px; font-size: 13px; }
+  h2 { font: 900 16px "Arial Black", Impact, sans-serif; color: var(--acc); margin: 28px 0 10px; letter-spacing: 2px; }
+  .item { display: flex; align-items: center; gap: 10px; padding: 12px; border: 1px solid var(--dim); margin-bottom: 8px; cursor: pointer; }
+  .item.sel { border-color: var(--hot); background: rgba(255,30,86,.08); }
+  .item .txt { flex: 1; }
+  .item b { display: block; font-size: 15px; }
+  .item small { opacity: .6; }
+  button { background: none; color: var(--fg); border: 1px solid var(--dim); padding: 8px 10px; font: inherit; font-size: 13px; cursor: pointer; white-space: nowrap; }
+  button:hover { border-color: var(--acc); color: var(--acc); }
+  .mark { width: 14px; height: 14px; border: 2px solid var(--dim); transform: rotate(45deg); flex: none; }
+  .sel .mark { background: var(--hot); border-color: var(--hot); }
+  a { color: var(--acc); }
+  .foot { margin-top: 30px; font-size: 13px; opacity: .7; }
+</style>
+</head>
+<body>
+<main>
+  <h1>SOUND <span>LAB</span></h1>
+  <p class="sub">장애물 소리 후보 미리듣기. 빨간 표시 = 게임에서 사용 중 (game.js의 LASER_SFX / SLAM_SFX).</p>
+
+  <h2>LASER</h2>
+  <div id="lasers"></div>
+
+  <h2>HALF-SCREEN SLAM</h2>
+  <div id="slams"></div>
+
+  <p class="foot">▶ 단독: 소리만 / ▶ 비트: 150BPM 한 마디 위에서 (레이저는 2·4박, 슬램은 3박)<br><a href="./">← 게임으로</a></p>
+</main>
+<script src="audio.js"></script>
+<script>
+  'use strict';
+  const BEAT = 0.4;
+  function ready() { Sound.init(); if (!ready.bus) { Sound.newBus(); ready.bus = true; } return Sound.ctx.currentTime + 0.05; }
+
+  function beatBar(t0, hits, play) {
+    for (let b = 0; b < 4; b++) {
+      const t = t0 + b * BEAT;
+      if (b === 0 || b === 2) Sound.kick(t);
+      if (b === 1 || b === 3) Sound.clap(t, 0.35);
+      Sound.hat(t, 0.07); Sound.hat(t + BEAT / 2, 0.1);
+    }
+    hits.forEach(b => play(t0 + b * BEAT));
+  }
+
+  const IN_USE = { laser: 1, slam: 4 };   // game.js LASER_SFX / SLAM_SFX 와 같게
+  function build(id, list, key, hits) {
+    const box = document.getElementById(id);
+    const render = () => {
+      const cur = IN_USE[key];
+      box.querySelectorAll('.item').forEach((el, i) => el.classList.toggle('sel', i === cur));
+    };
+    list.forEach((s, i) => {
+      const el = document.createElement('div');
+      el.className = 'item';
+      el.innerHTML = `<div class="mark"></div><div class="txt"><b>${i + 1}. ${s.name}</b><small>${s.desc}</small></div>`;
+      const solo = document.createElement('button'); solo.textContent = '▶ 단독';
+      const beat = document.createElement('button'); beat.textContent = '▶ 비트';
+      solo.onclick = e => { e.stopPropagation(); s.play(ready(), 0); };
+      beat.onclick = e => { e.stopPropagation(); beatBar(ready() + 0.05, hits, t => s.play(t, 0)); };
+      el.onclick = () => s.play(ready(), 0);
+      el.append(solo, beat);
+      box.append(el);
+    });
+    render();
+  }
+  build('lasers', Sound.LASERS, 'laser', [1, 3]);
+  build('slams', Sound.SLAMS, 'slam', [2]);
+</script>
+</body>
+</html>

@@ -14,6 +14,7 @@ const Sound = (() => {
   // when: ctx 시간, offset: 파일 내 위치(초)
   // 곡 → 로우패스(DJ 필터) → 게인 → 버스
   const DODGE_LP = 1800, DODGE_GAIN = 0.85;
+  const CATCH_LP = 520, CATCH_GAIN = 0.6;    // 캐치 박에 빨아들이는 정도 (이전 140Hz / 0.12 → 너무 사라짐)
   function playSong(when, offset, phase) {
     stopSong();
     songGain = ac.createGain(); songGain.connect(bus);
@@ -37,8 +38,8 @@ const Sound = (() => {
     if (!songLP) return;
     const f = songLP.frequency, g = songGain.gain;
     f.cancelScheduledValues(t); g.cancelScheduledValues(t);
-    f.setValueAtTime(DODGE_LP, t); f.exponentialRampToValueAtTime(140, t + dur * 0.85);
-    g.setValueAtTime(DODGE_GAIN, t); g.linearRampToValueAtTime(0.12, t + dur * 0.85);
+    f.setValueAtTime(DODGE_LP, t); f.exponentialRampToValueAtTime(CATCH_LP, t + dur * 0.85);
+    g.setValueAtTime(DODGE_GAIN, t); g.linearRampToValueAtTime(CATCH_GAIN, t + dur * 0.85);
   }
   // 필터 효과 끄기: 즉시 원음
   function songOpen(t) {
@@ -51,8 +52,8 @@ const Sound = (() => {
     if (!songLP) return;
     const f = songLP.frequency, g = songGain.gain;
     f.cancelScheduledValues(t - 0.01); g.cancelScheduledValues(t - 0.01);
-    f.setValueAtTime(140, t - 0.01); f.exponentialRampToValueAtTime(20000, t + 0.015);
-    g.setValueAtTime(0.12, t - 0.01); g.linearRampToValueAtTime(1, t + 0.01);
+    f.setValueAtTime(CATCH_LP, t - 0.01); f.exponentialRampToValueAtTime(20000, t + 0.015);
+    g.setValueAtTime(CATCH_GAIN, t - 0.01); g.linearRampToValueAtTime(1, t + 0.01);
   }
 
   const makeCurve = k => {
@@ -192,7 +193,97 @@ const Sound = (() => {
       const o2 = osc('sine', f * 2, t, 0.3), g2 = ac.createGain();
       env(g2, t, 0.002, 0.15, 0.25); o2.connect(g2).connect(sfxOut);
     }
-  }  function sfxGraze() {
+  }
+  // ---- 장애물 사운드 후보 (lab.html에서 골라서 저장) ----
+  // 모두 고정 음높이: 레이저에 멜로디 없음
+  function outP(p = 0) { const n = ac.createStereoPanner(); n.pan.value = Math.max(-0.7, Math.min(0.7, p)); n.connect(bus); return n; }
+  function nz(t, dur, type, freq, q, peak, dec, o) {
+    const s = noiseSrc(t, dur), f = ac.createBiquadFilter(), g = ac.createGain();
+    f.type = type; f.frequency.value = freq; if (q) f.Q.value = q;
+    env(g, t, 0.001, peak, dec); s.connect(f).connect(g).connect(o); return f;
+  }
+  const LASERS = [
+    { name: 'Heavy Beam', desc: '찢어지는 저음 톱니 빔, 필터가 닫히며 끝남', play(t, p) {
+      const o = outP(p), sh = ac.createWaveShaper(), lp = ac.createBiquadFilter(), g = ac.createGain();
+      sh.curve = hard; lp.type = 'lowpass'; lp.Q.value = 4;
+      lp.frequency.setValueAtTime(3500, t); lp.frequency.exponentialRampToValueAtTime(250, t + 0.24);
+      env(g, t, 0.003, 0.3, 0.26);
+      for (const f of [55, 55.8, 110.5]) osc('sawtooth', f, t, 0.35).connect(sh);
+      sh.connect(lp).connect(g).connect(o);
+      nz(t, 0.15, 'highpass', 2200, 0, 0.18, 0.08, o);
+    } },
+    { name: 'Railgun', desc: '날카로운 크랙 + 서브 드롭 (사용 중)', play(t, p) {
+      const o = outP(p);
+      nz(t, 0.08, 'bandpass', 3500, 0.8, 0.55, 0.035, o);
+      const s = osc('sine', 150, t, 0.4), g = ac.createGain();
+      s.frequency.exponentialRampToValueAtTime(32, t + 0.25); env(g, t, 0.001, 0.75, 0.3); s.connect(g).connect(o);
+      const tail = nz(t, 0.45, 'lowpass', 1400, 0, 0.16, 0.35, o);
+      tail.frequency.exponentialRampToValueAtTime(200, t + 0.35);
+    } },
+    { name: 'Plasma Zap', desc: '짧고 굵은 디스토션 잽', play(t, p) {
+      const o = outP(p), q = osc('square', 420, t, 0.25), sh = ac.createWaveShaper(), lp = ac.createBiquadFilter(), g = ac.createGain();
+      q.frequency.exponentialRampToValueAtTime(70, t + 0.06);
+      sh.curve = hard; lp.type = 'lowpass'; lp.frequency.value = 2200; env(g, t, 0.002, 0.22, 0.18);
+      q.connect(sh).connect(lp).connect(g).connect(o);
+      nz(t, 0.06, 'highpass', 4000, 0, 0.12, 0.03, o);
+    } },
+    { name: 'Reese Blast', desc: '두꺼운 리스 베이스 + 쿵', play(t, p) {
+      const o = outP(p), sh = ac.createWaveShaper(), lp = ac.createBiquadFilter(), g = ac.createGain();
+      sh.curve = hard; lp.type = 'lowpass'; lp.Q.value = 6;
+      lp.frequency.setValueAtTime(1800, t); lp.frequency.exponentialRampToValueAtTime(450, t + 0.3);
+      env(g, t, 0.004, 0.32, 0.32);
+      for (const f of [41.2, 42.5, 82.4]) osc('sawtooth', f, t, 0.4).connect(sh);
+      sh.connect(lp).connect(g).connect(o);
+      const k = osc('sine', 95, t, 0.3), kg = ac.createGain();
+      k.frequency.exponentialRampToValueAtTime(40, t + 0.1); env(kg, t, 0.001, 0.6, 0.18); k.connect(kg).connect(o);
+    } },
+  ];
+  const SLAMS = [
+    { name: 'Original', desc: '빅 킥 + 808 + 크래시 (처음 버전)', play(t, p) {
+      const o = outP(p); kick(t, true, o); bass(t, 55, 0.9, 1.0, o); crash(t, 0.18, o);
+    } },
+    { name: 'Impact Boom', desc: '깊은 저음 붐 + 먹먹한 노이즈', play(t, p) {
+      const o = outP(p), s = osc('sine', 110, t, 0.7), g = ac.createGain();
+      s.frequency.exponentialRampToValueAtTime(30, t + 0.4); env(g, t, 0.002, 1.0, 0.5); s.connect(g).connect(o);
+      const f = nz(t, 0.7, 'lowpass', 2500, 0, 0.55, 0.45, o); f.frequency.exponentialRampToValueAtTime(180, t + 0.45);
+    } },
+    { name: 'Metal Slam', desc: '킥 + 쇠 문짝 쾅', play(t, p) {
+      const o = outP(p); kick(t, true, o);
+      const bp = ac.createBiquadFilter(), g = ac.createGain(); bp.type = 'bandpass'; bp.frequency.value = 1700; bp.Q.value = 2.5;
+      for (const f of [233, 347, 512, 789, 1121]) osc('square', f, t, 0.8).connect(bp);
+      env(g, t, 0.001, 0.16, 0.55); bp.connect(g).connect(o);
+      crash(t, 0.22, o);
+    } },
+    { name: 'Sub Drop', desc: '킥 + 길게 떨어지는 서브', play(t, p) {
+      const o = outP(p); kick(t, true, o);
+      const s = osc('sine', 95, t, 1.3), sh = ac.createWaveShaper(), g = ac.createGain();
+      s.frequency.exponentialRampToValueAtTime(28, t + 1.0); sh.curve = soft;
+      env(g, t, 0.003, 0.9, 1.1); s.connect(sh).connect(g).connect(o);
+    } },
+    { name: 'Glitch Crush', desc: '끊기는 디지털 파쇄음 (사용 중)', play(t, p) {
+      const o = outP(p); kick(t, true, o);
+      for (let i = 0; i < 4; i++) {
+        const tt = t + i * 0.045, sh = ac.createWaveShaper(), g = ac.createGain(); sh.curve = hard;
+        const q = osc('square', 60 + i * 7, tt, 0.05); const n = noiseSrc(tt, 0.05);
+        q.connect(sh); n.connect(sh); env(g, tt, 0.001, 0.22 * (1 - i * 0.18), 0.035); sh.connect(g).connect(o);
+      }
+    } },
+    { name: 'Thunder', desc: '킥 + 길게 울리는 천둥', play(t, p) {
+      const o = outP(p); kick(t, true, o);
+      const f = nz(t, 1.6, 'lowpass', 900, 0.7, 0.65, 1.3, o); f.frequency.exponentialRampToValueAtTime(110, t + 1.2);
+      crash(t, 0.12, o);
+    } },
+  ];
+
+  // 체력 회복: 짧게 올라가는 차임
+  function sfxHeal() {
+    const t = ac.currentTime;
+    [[587.33, 0], [880, 0.07], [1174.66, 0.14]].forEach(([f, d]) => {
+      const o = osc('sine', f, t + d, 0.4), g = ac.createGain();
+      env(g, t + d, 0.003, 0.14, 0.3); o.connect(g).connect(sfxOut);
+    });
+  }
+  function sfxGraze() {
     const t = ac.currentTime; if (t - lastGraze < 0.03) return; lastGraze = t;
     const o = osc('sine', 2600 + Math.random() * 400, t, 0.06), g = ac.createGain();
     env(g, t, 0.001, 0.05, 0.035); o.connect(g).connect(sfxOut);
@@ -223,8 +314,9 @@ const Sound = (() => {
 
   return {
     init, newBus, fadeOut, kick, bass, clap, hat, bell, crash, riser, roar,
-    sfxSlash, sfxGraze, sfxHit, sfxBoom, sfxTick, sfxStamp,
+    sfxSlash, sfxGraze, sfxHeal, sfxHit, sfxBoom, sfxTick, sfxStamp,
     preloadSong, loadSong, playSong, stopSong, songDodge, songCatch, songStrike, songOpen,
+    LASERS, SLAMS,
     get ctx() { return ac; },
     get songBuf() { return songBuf; },
   };
