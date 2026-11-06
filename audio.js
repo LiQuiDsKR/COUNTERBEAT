@@ -2,15 +2,23 @@
 // WebAudio 합성 phonk 키트. 음원 파일 없음 → 저작권 걱정 없고 싱크 완벽.
 const Sound = (() => {
   let ac = null, comp, sfxOut, noiseBuf, hard, soft, bus = null, lastGraze = 0;
-  let songBytes = null, songPromise = null, songBuf = null, songSrc = null, songGain = null, songLP = null;
+  const songs = {};   // url → { bytes, dec, buf } (스테이지마다 곡 하나)
+  let curUrl = null, songSrc = null, songGain = null, songLP = null;
   let master = null, songVol = null, volAll = 0.7, volMusic = 1;   // 볼륨 (설정 화면)
 
   // ---- 곡(mp3) ----
-  function preloadSong(url) { songBytes = fetch(url).then(r => r.arrayBuffer()); }
-  function loadSong() {
-    if (!songPromise) songPromise = songBytes.then(ab => ac.decodeAudioData(ab)).then(b => (songBuf = b));
-    return songPromise;
+  // 현재 곡 지정 + 미리 받기 (url null = 곡 없음, 합성 비트)
+  function preloadSong(url) {
+    curUrl = url;
+    if (url && !songs[url]) songs[url] = { bytes: fetch(url).then(r => r.arrayBuffer()), dec: null, buf: null };
   }
+  function loadSong() {
+    const e = songs[curUrl];
+    if (!e) return Promise.resolve(null);
+    if (!e.dec) e.dec = e.bytes.then(ab => ac.decodeAudioData(ab)).then(b => (e.buf = b));
+    return e.dec;
+  }
+  const curBuf = () => (songs[curUrl] && songs[curUrl].buf) || null;
   function stopSong() { if (songSrc) { try { songSrc.stop(); } catch (_) {} songSrc = null; } }
   // when: ctx 시간, offset: 파일 내 위치(초)
   // 곡 → 로우패스(DJ 필터) → 게인 → 버스
@@ -25,7 +33,7 @@ const Sound = (() => {
     const open = phase === 'strike';
     songLP.frequency.value = open ? 20000 : DODGE_LP;
     songGain.gain.value = open ? 1 : DODGE_GAIN;
-    songSrc = ac.createBufferSource(); songSrc.buffer = songBuf;
+    songSrc = ac.createBufferSource(); songSrc.buffer = curBuf();
     songSrc.connect(songLP); songSrc.start(when, Math.max(0, offset));
   }
   // 회피: 먹먹하게 (부드럽게 닫힘)
@@ -79,7 +87,7 @@ const Sound = (() => {
     for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
     hard = makeCurve(7); soft = makeCurve(2.2);
     if (ac.state === 'suspended') ac.resume();
-    if (songBytes) loadSong();
+    if (curUrl) loadSong();
   }
 
   // 판마다 새 버스. 재시작 시 이전 판 예약음 즉시 컷.
@@ -335,6 +343,6 @@ const Sound = (() => {
     preloadSong, loadSong, playSong, stopSong, songDodge, songCatch, songStrike, songOpen,
     LASERS, SLAMS,
     get ctx() { return ac; },
-    get songBuf() { return songBuf; },
+    get songBuf() { return curBuf(); },
   };
 })();

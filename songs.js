@@ -58,3 +58,12 @@ const SONGS = {
     ],
   },
 };
+
+// 스테이지 목록 (스테이지 선택 화면 카드 순서). song: SONGS 키, locked: 아직 없음
+// diff: 난이도 별 (1~5), color: 카드 강조색
+const STAGES = [
+  { id: 1, song: 'cb1', name: 'COUNTERBEAT', diff: 1, color: '#00e5ff' },
+  { id: 2, locked: true, color: '#ff1e56' },
+  { id: 3, locked: true, color: '#b06bff' },
+  { id: 4, locked: true, color: '#ffd23f' },
+];

@@ -68,15 +68,17 @@ function saveOpts() {
   for (const k of ['offset', 'sens', 'accel', 'laser', 'slam', 'vol', 'mvol']) localStorage.setItem('cb_' + k, opts[k]);
   localStorage.setItem('cb_filter', opts.filter ? '1' : '0');
 }
-const params = new URLSearchParams(location.search);
-const startBar = Math.max(0, parseInt(params.get('bar') || '0', 10) || 0);
-// 음악 모드: 기본 Suno 곡, ?music=synth 면 내장 합성 비트
-const SONG = params.get('music') === 'synth' ? null : SONGS[params.get('music') || 'cb1'] || SONGS.cb1;
-let SONG_BARS = null;   // 마디 → 구간 정보 테이블
-if (SONG) {
+// ===== 스테이지 =====
+// setStage: 곡·보스 HP·구간 테이블을 그 스테이지 것으로 바꿈 (곡이 없으면 내장 합성 비트)
+let STAGE = null, SONG = null, SONG_BARS = null;
+function setStage(stage) {
+  STAGE = stage;
+  SONG = SONGS[stage.song] || null;
+  SONG_BARS = null; BOSS_HP = 1000;
+  Sound.preloadSong(SONG ? SONG.file : null);
+  if (!SONG) return;
   if (SONG.bpm !== BPM) console.warn('곡 BPM이 게임 BPM과 다름', SONG.bpm, BPM);
   BOSS_HP = SONG.bossHp;
-  Sound.preloadSong(SONG.file);
   SONG_BARS = [];
   const secs = SONG.sections;
   let strikeN = 0, secN = 0;
@@ -94,12 +96,19 @@ if (SONG) {
   }
   SONG_BARS.endBar = secs[secs.length - 1][0];
 }
+// 스테이지별 기록: cb_best_<id>, cb_rank_<id> (예전 cb_best 는 1스테이지로 옮김)
+if (localStorage.getItem('cb_best') !== null && localStorage.getItem('cb_best_1') === null) {
+  localStorage.setItem('cb_best_1', localStorage.getItem('cb_best')); localStorage.removeItem('cb_best');
+}
+const stageBest = st => +(localStorage.getItem('cb_best_' + st.id) || 0);
+const stageRank = st => localStorage.getItem('cb_rank_' + st.id) || '';
+setStage(STAGES[0]);
 
 function freshState() {
   return {
     mode: 'title', paused: false, t0: 0, audioStep: 0, gameStep: 0, evStep: -1,
     player: { x: W / 2, y: H * 0.78 }, prevX: W / 2, prevY: H * 0.78, trail: [],
-    lives: MAX_LIVES, healPulse: 0, strikeMissN: 0, strikeHits: 0, strikeFin: false, invulnUntil: -1, bossHp: BOSS_HP, bossShown: BOSS_HP, bossFlash: 0,
+    lives: MAX_LIVES, healPulse: 0, strikeMissN: 0, strikeHits: 0, strikeFin: false, strikeImperfect: 0, invulnUntil: -1, bossHp: BOSS_HP, bossShown: BOSS_HP, bossFlash: 0,
     hazards: [], nodes: [], parts: [], texts: [],
     gauge: 0, combo: 0, maxCombo: 0, cycleDmg: 0, lastNode: null, slashN: 0,
     stats: { perfect: 0, great: 0, good: 0, miss: 0, graze: 0, hits: 0 }, timingSum: 0, timingN: 0,
@@ -373,7 +382,6 @@ function onStep(g) {
   const bar = g >> 4, s = g & 15, info = barInfo(bar), t = g * STEP;
   if (kicksOf(info).includes(s) && !(info.type === 'dodge' && info.last && s >= 12)) S.pulse = 1;
   if (info.type === 'end' && s === 0) { timeUp(t); return; }
-  if (practice && PRACTICE && bar === PRACTICE.to && s === 0) { startRun(PRACTICE.from); return; }   // 연습: 되감기
   if (info.type === 'intro' && s === 0 && (bar === 0 || bar === info.len - 2)) {
     popText(bar === 0 ? 'READY' : 'DRAG TO DODGE', W / 2, H * 0.45, { size: bar === 0 ? 56 : 34, dur: BAR * 900, chroma: true });
   }
@@ -403,13 +411,16 @@ function onStep(g) {
       const rate = total ? S.strikeHits / total : 0;
       const heal = hard ? rate >= 0.7 && S.strikeFin : S.strikeMissN === 0 && S.strikeHits > 0;
       if (heal) {
-        popText(S.strikeMissN === 0 ? 'FULL COMBO' : `CLEAR ${Math.round(rate * 100)}%`, W / 2, H * 0.66, { size: 30, col: 'fg', dur: 1000, chroma: true });
+        // FULL PERFECT(전부 PERFECT) > FULL COMBO(놓친 것 없음) > CLEAR 비율
+        const fp = S.strikeMissN === 0 && S.strikeImperfect === 0;
+        popText(fp ? 'FULL PERFECT' : S.strikeMissN === 0 ? 'FULL COMBO' : `CLEAR ${Math.round(rate * 100)}%`, W / 2, H * 0.66,
+          { size: fp ? 34 : 30, col: fp ? 'acc' : 'fg', dur: fp ? 1300 : 1000, chroma: true });
         if (S.lives < MAX_LIVES) {
           S.lives++; S.healPulse = 1; Sound.sfxHeal();
           popText('+1 HP', S.player.x, S.player.y - 40, { size: 24, col: 'acc', dur: 900, rise: 50 });
         } else S.score += 500;
       }
-      S.strikeMissN = 0; S.strikeHits = 0; S.strikeFin = false;
+      S.strikeMissN = 0; S.strikeHits = 0; S.strikeFin = false; S.strikeImperfect = 0;
       // 다음 반격 준비: 첫 노드는 드롭 박 0.22초 전부터 벨 수 있어서 드롭 시점이 아니라 여기서 초기화
       S.slashN = 0; S.cycleDmg = 0;
     }
@@ -433,19 +444,15 @@ function songTime() {
   const ac = Sound.ctx;
   return ac.currentTime - S.t0 - (ac.outputLatency || 0) + opts.offset;
 }
-// ===== 연습 모드 (W 키): 첫 SPLIT 구간 2마디 전부터 시작, SPLIT 끝나면 자동으로 되감기 =====
-const SPLIT_BAR = SONG ? (SONG.sections.find(x => x[2] === 'split') || [])[0] : undefined;
-const PRACTICE = SPLIT_BAR !== undefined ? { from: SPLIT_BAR - 2, to: SPLIT_BAR + 4 } : null;
-let practice = false, practiceLoop = 0;
-function togglePractice() {
-  if (!PRACTICE) return;
-  practice = !practice; practiceLoop = 0;
-  if (practice) startRun(PRACTICE.from);
-  else S.texts.push({ text: 'PRACTICE OFF', x: W / 2, y: H * 0.5, born: performance.now(), dur: 900, size: 28, col: 'fg', rise: 0, pop: 1, chroma: true });
+// 다시하기
+function restartRun() { startRun(0); }
+// 스테이지 선택 화면으로: 곡 끄고 메뉴 상태로
+function goToSelect() {
+  if (Sound.ctx) { Sound.stopSong(); Sound.newBus(); if (Sound.ctx.state === 'suspended') Sound.ctx.resume(); }
+  S = freshState(); ui.screen = 'select';
 }
-
 let pendingStart = false;
-function startRun(fromBar = startBar) {
+function startRun(fromBar = 0) {
   Sound.init();
   if (SONG && !Sound.songBuf) {          // 곡 디코딩 대기
     if (!pendingStart) { pendingStart = true; Sound.loadSong().then(() => { pendingStart = false; startRun(fromBar); }); }
@@ -462,7 +469,6 @@ function startRun(fromBar = startBar) {
   S.evStep = fromBar * 16 - 1;
   if (fromBar > 0) { S.player.x = keepX; S.player.y = keepY; }
   if (barInfo(fromBar).type === 'strike') S.vphase = 'strike';   // 반격 도중부터 시작한 경우
-  if (practice) popText(`PRACTICE #${++practiceLoop}`, W / 2, H * 0.36, { size: 30, col: 'acc', dur: 1200, rise: 0, chroma: true });
 }
 function pump() {
   if (S.mode !== 'play' || !Sound.ctx) return;
@@ -557,7 +563,6 @@ function playerHit(T) {
   burst(S.player.x, S.player.y, 26, '#ff1e56', 420, 4, 0.6);
   Sound.sfxHit();
   if (navigator.vibrate) navigator.vibrate(60);
-  if (practice && S.lives < 1) S.lives = 1;   // 연습 중엔 안 죽음
   if (S.lives <= 0) die(T);
 }
 function timeUp(T) {
@@ -585,7 +590,10 @@ function nodeHit(n, T) {
   else { j = 'good'; jm = 0.4; label = 'GOOD'; }
   // 보스 처치(S.killed) 이후 노드는 타격감만: 판정·콤보·점수 기록은 처치 시점에서 고정
   const counted = !S.killed;
-  if (counted) { S.stats[j]++; S.combo++; S.strikeHits++; if (n.fin) S.strikeFin = true; S.timingSum += T - n.t; S.timingN++; }
+  if (counted) {
+    S.stats[j]++; S.combo++; S.strikeHits++; if (n.fin) S.strikeFin = true; S.timingSum += T - n.t; S.timingN++;
+    if (j !== 'perfect') S.strikeImperfect++;
+  }
   S.maxCombo = Math.max(S.maxCombo, S.combo);
   const mult = 1 + S.gauge / 50;
   const dmg = Math.round((n.fin ? 40 : 10) * jm * mult * (1 + Math.min(S.combo, 20) * 0.02));
@@ -630,9 +638,13 @@ function win(T) {
 }
 function finishRun() {
   S.endReal = performance.now();
-  const best = +(localStorage.getItem('cb_best') || 0);
+  const best = stageBest(STAGE);
   S.best = Math.max(best, S.score);
-  if (S.score > best) { S.newBest = true; localStorage.setItem('cb_best', S.score); }
+  if (S.score > best) { S.newBest = true; localStorage.setItem('cb_best_' + STAGE.id, S.score); }
+  if (S.mode === 'win') {
+    const order = RANK_ORDER, r = rank(), old = stageRank(STAGE);
+    if (!old || order.indexOf(r) > order.indexOf(old)) localStorage.setItem('cb_rank_' + STAGE.id, r);
+  }
 }
 
 // ================= 이펙트 =================
@@ -993,7 +1005,7 @@ function drawHUD(pal, T) {
   ctx.fillStyle = `rgba(${pal.grid},0.12)`; ctx.fillRect(30, 30, W - 60, 12);
   ctx.fillStyle = pal.acc; ctx.fillRect(30, 30, (W - 60) * lagP, 12);
   ctx.fillStyle = pal.fg; ctx.fillRect(30, 30, (W - 60) * hpP, 12);
-  text('BOSS', 30, 58, 14, pal.fg, { align: 'left' });
+  text('BOSS', 66, 58, 14, pal.fg, { align: 'left' });
   text(S.score.toLocaleString(), W - 30, 58, 14, pal.fg, { align: 'right' });
 
   if (T >= 0) {
@@ -1016,87 +1028,20 @@ function drawHUD(pal, T) {
   text('GRAZE', gx, gy - 12, 11, pal.fg, { align: 'left', alpha: 0.6 });
   text(`x${(1 + S.gauge / 50).toFixed(1)}`, gx + gw + 12, gy + 4, 16, pal.acc, { align: 'left' });
   if (S.combo > 1) text(`${S.combo} COMBO`, W - 30, H - 78, 16, pal.fg, { align: 'right' });
-  const flags = [practice && 'PRACTICE (W)', opts.god && 'GOD', SONG && !opts.filter && 'FILTER OFF', opts.offset && `SYNC ${Math.round(opts.offset * 1000)}ms`].filter(Boolean).join('  ');
-  if (flags) text(flags, 30, 110, 12, pal.acc, { align: 'left' });
 }
 
-// ================= 설정 화면 =================
-let settingsOpen = false;
-const SET_Y0 = 210, SET_DY = 80;
-const SETTINGS = [
-  { label: '전체 볼륨', get: () => `${opts.vol * 10}%`,
-    step: d => { opts.vol = clamp(opts.vol + d, 0, 10); applyVolume(); preview(Sound.SLAMS[opts.slam]); } },
-  { label: '음악 볼륨', get: () => `${opts.mvol * 10}%`, step: d => { opts.mvol = clamp(opts.mvol + d, 0, 10); applyVolume(); } },
-  { label: '이동 감도', get: () => `${opts.sens + 1}`, step: d => { opts.sens = clamp(opts.sens + d, 0, SENS_LEVELS.length - 1); } },
-  { label: '가속', get: () => ACCEL_LEVELS[opts.accel][1], step: d => { opts.accel = clamp(opts.accel + d, 0, ACCEL_LEVELS.length - 1); } },
-  { label: '레이저 소리', get: () => Sound.LASERS[opts.laser].name,
-    step: d => { opts.laser = (opts.laser + d + Sound.LASERS.length) % Sound.LASERS.length; preview(Sound.LASERS[opts.laser]); } },
-  { label: '슬램 소리', get: () => Sound.SLAMS[opts.slam].name,
-    step: d => { opts.slam = (opts.slam + d + Sound.SLAMS.length) % Sound.SLAMS.length; preview(Sound.SLAMS[opts.slam]); } },
-  { label: 'DJ 필터', get: () => opts.filter ? 'ON' : 'OFF', step: () => { opts.filter = !opts.filter; } },
-  { label: '싱크 보정', get: () => `${Math.round(opts.offset * 1000)}ms`,
-    step: d => { opts.offset = Math.round((opts.offset + d * 0.01) * 100) / 100; } },
-];
-function preview(snd) { Sound.init(); Sound.ensureBus(); snd.play(Sound.ctx.currentTime + 0.03, 0); }
-const GEAR = { x: W - 48, y: 52, r: 30 };
-
-function drawGear(pal) {
-  const { x, y } = GEAR;
-  ctx.strokeStyle = pal.fg; ctx.globalAlpha = 0.75; ctx.lineWidth = 4;
-  ctx.beginPath(); ctx.arc(x, y, 9, 0, Math.PI * 2); ctx.stroke();
-  for (let i = 0; i < 8; i++) {
-    const a = i / 8 * Math.PI * 2;
-    ctx.beginPath(); ctx.moveTo(x + Math.cos(a) * 14, y + Math.sin(a) * 14); ctx.lineTo(x + Math.cos(a) * 20, y + Math.sin(a) * 20); ctx.stroke();
-  }
-  ctx.beginPath(); ctx.arc(x, y, 15, 0, Math.PI * 2); ctx.stroke();
-  ctx.globalAlpha = 1;
-}
-function arrow(x, y, dir, pal) {
-  ctx.fillStyle = pal.acc;
-  ctx.beginPath(); ctx.moveTo(x + dir * 10, y); ctx.lineTo(x - dir * 8, y - 12); ctx.lineTo(x - dir * 8, y + 12); ctx.closePath(); ctx.fill();
-}
-function drawSettings(pal) {
-  ctx.fillStyle = 'rgba(7,7,12,0.97)'; ctx.fillRect(0, 0, W, H);
-  chromaText('SETTINGS', W / 2, 120, 44, pal);
-  const ko = { font: FONT_KO, weight: 700 };
-  SETTINGS.forEach((it, i) => {
-    const y = SET_Y0 + i * SET_DY;
-    ctx.fillStyle = 'rgba(255,255,255,0.05)'; ctx.fillRect(30, y - 31, W - 60, 62);
-    text(it.label, 52, y, 20, pal.fg, { ...ko, align: 'left' });
-    arrow(262, y, -1, pal); arrow(498, y, 1, pal);
-    text(it.get(), 380, y, it.get().length > 8 ? 17 : 22, pal.fg);
-  });
-  const by = SET_Y0 + SETTINGS.length * SET_DY + 40;
-  ctx.strokeStyle = pal.acc; ctx.lineWidth = 3; ctx.strokeRect(W / 2 - 100, by - 28, 200, 56);
-  text('BACK', W / 2, by + 1, 24, pal.acc);
-}
-// 설정 화면 터치: 행의 왼쪽 절반(값 영역 기준) = 이전, 오른쪽 = 다음
-function settingsTap(x, y) {
-  const by = SET_Y0 + SETTINGS.length * SET_DY + 40;
-  if (Math.abs(y - by) < 34 && Math.abs(x - W / 2) < 110) { settingsOpen = false; saveOpts(); return; }
-  const i = Math.round((y - SET_Y0) / SET_DY);
-  if (i < 0 || i >= SETTINGS.length || Math.abs(y - (SET_Y0 + i * SET_DY)) > 34 || x < 230) return;
-  SETTINGS[i].step(x < 380 ? -1 : 1);
-  saveOpts();
-}
-
-function drawTitle(pal, now) {
-  const t = now / 1000;
-  S.pulse = Math.max(0, 1 - ((t % BEAT) / BEAT) * 3);
-  drawGrid(pal, t);
-  drawBoss(pal, t);
-  chromaText('COUNTERBEAT', W / 2, 470, 52, pal);
-  const best = +(localStorage.getItem('cb_best') || 0);
-  if (best) text(`BEST ${best.toLocaleString()}`, W / 2, 516, 15, pal.fg, { alpha: 0.55 });
-  const bp = (t % BEAT) / BEAT;
-  text(pendingStart ? 'LOADING' : 'TAP TO START', W / 2, 760, 24, pal.acc, { alpha: 1 - bp * 0.7 });
-  drawGear(pal);
-  if (settingsOpen) drawSettings(pal);
-}
-
+// 등급 (낮음 → 높음): C B A S M L. 클리어했을 때만.
+//   L (Legend) = 곡 전체 FULL PERFECT (방울 전부 PERFECT)
+//   M (Master) = 곡 전체 FULL COMBO (방울 MISS 0)
+//   S / A / B / C = 정확도·피격 기준
+// 보스 처치 이후 방울은 기록에 안 들어가므로 처치 시점까지로 판정
+const RANK_ORDER = 'CBASML';
+const RANK_NAME = { L: 'LEGEND', M: 'MASTER' };
 function rank() {
   const s = S.stats, tot = s.perfect + s.great + s.good + s.miss;
   const acc = tot ? (s.perfect + s.great * 0.7 + s.good * 0.4) / tot : 0;
+  if (tot && s.miss === 0 && s.great === 0 && s.good === 0) return 'L';
+  if (tot && s.miss === 0) return 'M';
   if (s.hits <= 1 && acc > 0.85) return 'S';
   if (s.hits <= 3 && acc > 0.7) return 'A';
   if (acc > 0.5) return 'B';
@@ -1136,11 +1081,8 @@ function drawEnd(pal, now) {
 
   if (e >= revealTime()) {
     const bp = (now / 1000 % BEAT) / BEAT;
-    const y = H * 0.86, w = 230, h = 54;
-    ctx.strokeStyle = pal.acc; ctx.lineWidth = 3; ctx.globalAlpha = 1 - bp * 0.5;
-    ctx.strokeRect(W / 2 - w / 2, y - h / 2, w, h);
-    ctx.globalAlpha = 1;
-    text('RETRY', W / 2, y + 1, 26, pal.acc, { alpha: 1 - bp * 0.5 });
+    button(W / 2 - 112, H * 0.86, 200, 56, 'RETRY', pal, { primary: true, pulse: bp }, () => restartRun());
+    button(W / 2 + 112, H * 0.86, 200, 56, 'STAGES', pal, {}, () => goToSelect());
   }
 }
 
@@ -1203,9 +1145,12 @@ function drawWinScreen(pal, e) {
   const rk = (e - 2.25) / 0.13;
   if (rk > 0) {
     once('rank', () => { S.shake = 1.2; S.flash = 0.35; S.flashCol = '#ffffff'; Sound.sfxStamp(true); });
-    text('RANK', W / 2, H * 0.62, 13, pal.fg, { alpha: Math.min(1, rk) * 0.6 });
+    const r = rank(), rcol = r === 'L' ? '#ffd23f' : pal.acc;
+    // 등급 위 라벨: M/L 이면 이름(MASTER/LEGEND), 아니면 RANK
+    if (RANK_NAME[r]) text(RANK_NAME[r], W / 2, H * 0.62, 20, rcol, { alpha: Math.min(1, rk) });
+    else text('RANK', W / 2, H * 0.62, 13, pal.fg, { alpha: Math.min(1, rk) * 0.6 });
     ctx.save(); ctx.translate(W / 2, H * 0.71); ctx.rotate(-0.12);
-    stamp(rank(), 0, 0, 130, pal, rk, pal.acc);
+    stamp(r, 0, 0, 130, pal, rk, rcol);
     ctx.restore();
   }
   if (S.newBest && e >= 2.55) {
@@ -1218,7 +1163,8 @@ function draw(T, now) {
   const pal = PAL[S.vphase];
   ctx.setTransform(dpr * scale, 0, 0, dpr * scale, 0, 0);
   ctx.fillStyle = pal.bg; ctx.fillRect(0, 0, W, H);
-  if (S.mode === 'title') { drawTitle(pal, now); return; }
+  ui.hits = [];   // 버튼 터치 영역은 매 프레임 그리면서 다시 등록
+  if (S.mode === 'title') { drawMenu(pal, now); return; }
 
   const inCatch = S.catchT !== null && T >= S.catchT;
   const cp = inCatch ? Math.min(1, (T - S.catchT) / BEAT) : 0;
@@ -1249,10 +1195,12 @@ function draw(T, now) {
     ctx.restore();
   }
   if (S.paused) {
-    ctx.fillStyle = pal.shade; ctx.fillRect(0, 0, W, H);
-    text('PAUSED', W / 2, H * 0.45, 56, pal.fg);
-    text('TAP TO RESUME', W / 2, H * 0.52, 20, pal.acc);
-  }
+    ctx.fillStyle = '#000000'; ctx.fillRect(0, 0, W, H);   // 완전히 가림: 멈춰놓고 패턴 보며 예측하는 꼼수 방지
+    chromaText('PAUSED', W / 2, H * 0.32, 60, PAL.dodge);
+    button(W / 2, H * 0.46, 280, 64, 'RESUME', PAL.dodge, { primary: true }, () => setPaused(false));
+    button(W / 2, H * 0.46 + 84, 280, 64, 'RETRY', PAL.dodge, {}, () => { setPaused(false); restartRun(); });
+    button(W / 2, H * 0.46 + 168, 280, 64, 'STAGES', PAL.dodge, {}, () => { setPaused(false); goToSelect(); });
+  } else if (S.mode === 'play') drawPauseButton(pal);
 }
 
 // ================= 메인 루프 =================
@@ -1289,25 +1237,35 @@ function setPaused(v) {
   S.paused = v;
   v ? Sound.ctx.suspend() : Sound.ctx.resume();
 }
+// 화면 좌표 → 논리 좌표 (540×960)
+function toLogical(e) {
+  const r = canvas.getBoundingClientRect();
+  return [(e.clientX - r.left) / scale, (e.clientY - r.top) / scale];
+}
+let downX = 0, downY = 0, downAt = 0;
 canvas.addEventListener('pointerdown', e => {
   e.preventDefault();
   Sound.init();
   const now = performance.now();
-  const r = canvas.getBoundingClientRect(), tx = (e.clientX - r.left) / scale, ty = (e.clientY - r.top) / scale;
-  if (S.paused) setPaused(false);
-  else if (S.mode === 'title') {
-    if (settingsOpen) { settingsTap(tx, ty); return; }
-    if (Math.hypot(tx - GEAR.x, ty - GEAR.y) < GEAR.r + 14) { settingsOpen = true; return; }
-    startRun();
-  }
-  else if (S.mode === 'dead' || S.mode === 'win') {
-    const e = (now - S.endReal) / 1000, rt = revealTime();
-    if (e < 0.3) { /* 오입력 방지 */ }
-    else if (e < rt) S.endReal = now - rt * 1000;   // 연출 스킵
-    else startRun();
-  }
+  const [tx, ty] = toLogical(e);
+  downX = tx; downY = ty; downAt = now;
   dragging = true; lx = e.clientX; ly = e.clientY; lt = e.timeStamp;
   try { canvas.setPointerCapture(e.pointerId); } catch (_) {}
+  if (S.mode === 'title') { uiDown(tx, ty); return; }
+  // 게임 중 일시정지 버튼은 누르는 즉시
+  if (S.mode === 'play' && !S.paused && hitAt(tx, ty)) { tapAt(tx, ty); dragging = false; return; }
+  if (S.mode === 'dead' || S.mode === 'win') {
+    const el = (now - S.endReal) / 1000, rt = revealTime();
+    if (el >= 0.3 && el < rt) { S.endReal = now - rt * 1000; dragging = false; }   // 연출 스킵
+  }
+});
+// 탭 = 거의 안 움직이고 짧게 누름. 메뉴·일시정지·결과 화면 버튼은 손을 뗄 때 실행
+canvas.addEventListener('pointerup', e => {
+  if (!dragging) return;
+  const [tx, ty] = toLogical(e);
+  const tap = Math.hypot(tx - downX, ty - downY) < 18 && performance.now() - downAt < 600;
+  if (S.mode === 'title') uiUp(tx, ty, tap);
+  else if (tap && (S.paused || S.mode === 'dead' || S.mode === 'win')) tapAt(tx, ty);
 });
 canvas.addEventListener('pointermove', e => {
   if (!dragging) return;
@@ -1315,6 +1273,7 @@ canvas.addEventListener('pointermove', e => {
   const base = SENS_LEVELS[opts.sens], acc = ACCEL_LEVELS[opts.accel][0];
   const gain = clamp(base + Math.hypot(dx, dy) / dt * acc, base, acc ? base * 1.75 : base);
   const k = gain / scale;
+  if (S.mode === 'title') { uiMove(...toLogical(e)); lx = e.clientX; ly = e.clientY; lt = e.timeStamp; return; }
   if (S.mode === 'play' && !S.paused) {
     const p = S.player;
     p.x = clamp(p.x + dx * k, 12, W - 12);
@@ -1323,23 +1282,13 @@ canvas.addEventListener('pointermove', e => {
   lx = e.clientX; ly = e.clientY; lt = e.timeStamp;
 });
 const endDrag = () => { dragging = false; };
-canvas.addEventListener('pointerup', endDrag);
-canvas.addEventListener('pointercancel', endDrag);
+canvas.addEventListener('pointerup', endDrag);   // 위의 탭 처리 다음에 실행
+canvas.addEventListener('pointercancel', e => { if (S.mode === 'title' && dragging) uiUp(...toLogical(e), false); endDrag(); });
 document.addEventListener('visibilitychange', () => { if (document.hidden) setPaused(true); });
 
+// 키보드는 ESC 하나 (PC용): 게임 중 = 일시정지/이어하기, 메뉴 = 뒤로
 addEventListener('keydown', e => {
-  const k = e.key.toLowerCase();
-  if (k === 'g') opts.god = !opts.god;
-  if (k === 'h') opts.hitbox = !opts.hitbox;
-  if (k === 'f') {
-    opts.filter = !opts.filter; saveOpts();
-    if (!opts.filter && S.mode === 'play' && Sound.ctx) Sound.songOpen(Sound.ctx.currentTime);
-  }
-  if (k === 'p' || k === 'escape') setPaused(!S.paused);
-  if (k === 'r') { Sound.init(); startRun(practice && PRACTICE ? PRACTICE.from : startBar); }
-  if (k === 'w') { Sound.init(); togglePractice(); }
-  if (e.key === '[' || e.key === ']') {
-    opts.offset = Math.round((opts.offset + (e.key === ']' ? 0.01 : -0.01)) * 100) / 100;
-    saveOpts();
-  }
+  if (e.key !== 'Escape') return;
+  if (S.mode === 'title') uiBack();
+  else setPaused(!S.paused);
 });
